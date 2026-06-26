@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — keys (generate a Bitmark wallet)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:8px; padding:10px 13px; margin:14px 0; }
+  .field { margin:14px 0; }
+  .field .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; background:var(--pan); margin-top:4px; user-select:all; }
+  .secret .v { border-color:var(--bad); background:#fff5f5; }
+  table { border-collapse:collapse; width:100%; margin-top:6px; }
+  td, th { border:1px solid var(--bd); padding:6px 9px; text-align:left; } td.addr { word-break:break-all; }
+  th { background:var(--pan); color:var(--mut); font-weight:700; font-size:12px; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  input { width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; font:inherit; }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node — keys <span class="dim">(generate a Bitmark wallet)</span></h1>
+<p class="dim">Generate a fresh <b>Bitmark (BTM)</b> wallet in your browser. This is the one page that touches
+<b>private keys</b> — the seed is created locally (<code>crypto.getRandomValues</code>) and never leaves this tab.
+Take a receiving address to the <a href="wallet.html">wallet</a> to check balance and spend. Bitmark has no SegWit, so
+addresses are <b>legacy P2PKH</b> (base58, prefix <code>b…</code>). <a href="index.html">home</a></p>
+
+<div class="warn-box dim">
+⚠ <b>Real coin.</b> BTM has real (if small) value — this is not a testnet. The secret below (mnemonic) <b>is</b> your wallet;
+anyone who sees it controls the funds. It lives only in this tab and vanishes on reload — write it down to keep the wallet.</div>
+
+<p><button id="gen">▶ Generate a new wallet</button> <span id="status" class="dim"></span></p>
+<p class="dim" style="margin-top:4px">…or <b>import</b> an existing <b>BIP39 mnemonic</b> to derive its Bitmark account:</p>
+<input id="mnemonic" spellcheck="false" placeholder="twelve word mnemonic phrase …">
+<p style="margin-top:8px"><button id="import">▶ Import mnemonic</button></p>
+
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Path: BIP44 <code>m/44'/177'/0'</code> (Bitmark, SLIP-44 coin 177), receiving chain <code>0/i</code>, legacy P2PKH.
+Private/hardened BIP32 keygen uses the bundled WASM secp; BIP39 + BIP32 are verified against the test vectors
+(<code>test-keys.mjs</code>). Next: check balance + spend in the <a href="wallet.html">wallet</a>.</p>
+
+<script type="module">
+import { deriveAccountNode, mnemonicToSeed, generateMnemonic, deriveSigningKey } from './wasm-keygen.js';
+import { Bip32 } from './engine/codec/wallet.js';
+import { ScriptEngine } from './engine/codec/script.js';
+import { hash160, bytesToHex } from './engine/codec/hash.js';
+
+const $ = (id) => document.getElementById(id);
+const COIN = 177;
+let se = null;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain] = await Promise.all([jl('script'), jl('chain')]);
+  se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
+}
+
+function addrAt(seed, i) {
+  const key = deriveSigningKey(seed, { purpose: 44, coin: COIN, change: 0, index: i });
+  return se.classify('76a914' + bytesToHex(hash160(key.pub)) + '88ac').address;
+}
+
+function showWallet(seed, backup) {
+  const node = deriveAccountNode(seed, { purpose: 44, coin: COIN, version: se.params.xpubVersion });
+  const xpub = Bip32.encode(node);
+  let rows = '';
+  for (let i = 0; i < 5; i++) rows += `<tr><td>0/${i}</td><td class="addr">${addrAt(seed, i)}</td></tr>`;
+  $('out').innerHTML =
+    `<div class="field secret"><div class="k">${backup.k}</div><div class="v">${backup.v}</div></div>` +
+    `<div class="field"><div class="k">account xpub (watch-only)</div><div class="v">${xpub}</div></div>` +
+    `<div class="field"><div class="k">receiving addresses — fund one, then open the wallet</div>` +
+    `<table><tr><th style="width:70px">path</th><th>address (legacy P2PKH)</th></tr>${rows}</table></div>` +
+    `<p style="margin-top:10px"><a href="wallet.html">▶ open the wallet</a> to check balance and spend</p>`;
+  $('status').innerHTML = `<span class="ok">✓ ${backup.kind} wallet (in this tab only)</span>`;
+}
+
+async function generate() {
+  const mnemonic = generateMnemonic(128);
+  showWallet(await mnemonicToSeed(mnemonic, ''), { kind: 'generated', k: 'mnemonic — secret, back this up (BIP39)', v: mnemonic });
+}
+async function importMnemonic() {
+  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  const words = m ? m.split(' ').length : 0;
+  if (![12, 15, 18, 21, 24].includes(words)) { $('status').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  showWallet(await mnemonicToSeed(m, ''), { kind: 'imported', k: 'mnemonic — secret, your wallet', v: m });
+}
+
+$('gen').onclick = generate;
+$('import').onclick = importMnemonic;
+await loadEngine();
+$('status').textContent = 'engine ready — press Generate';
+</script>
+</body>
+</html>
