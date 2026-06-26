@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — full node (validate blocks in-tab)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:820px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button, input { font:inherit; } input { width:90px; border:1px solid var(--bd); border-radius:6px; padding:6px 8px; background:var(--pan); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin:16px 0; }
+  .stat { border:1px solid var(--bd); border-radius:8px; padding:10px 14px; background:var(--pan); min-width:120px; }
+  .stat .n { font-size:20px; } .stat .l { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .bar { height:10px; border:1px solid var(--bd); border-radius:6px; overflow:hidden; background:var(--pan); margin:10px 0; }
+  .bar > div { height:100%; background:var(--good); width:0; transition:width .2s; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  #log { border:1px solid var(--bd); border-radius:8px; background:var(--pan); padding:8px 10px; height:150px; overflow:auto; font-size:12px; margin-top:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node — full node <span class="dim">(validate blocks in-tab)</span></h1>
+<p class="dim">The real thing: <b>download Bitmark blocks and fully validate them in this tab</b> — CheckBlock structure,
+contextual rules (bip34, amounts, coinbase maturity, fees), <b>every signature</b> verified with the kernel's script
+interpreter, and a <b>UTXO set built from scratch</b>. No Electrum, no trusted index — the wallet's eventual source of truth.
+Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href="node.html">headers-only node</a></p>
+
+<p>validate the first <input id="count" inputmode="numeric" value="2000"> blocks from genesis &nbsp;
+<button id="start">▶ Start full validation</button> <span id="status" class="dim">idle</span></p>
+
+<div class="stats">
+  <div class="stat"><div class="n" id="height">0</div><div class="l">blocks validated</div></div>
+  <div class="stat"><div class="n" id="utxo">0</div><div class="l">UTXO coins</div></div>
+  <div class="stat"><div class="n ok" id="sigs">0</div><div class="l">signatures verified</div></div>
+  <div class="stat"><div class="n" id="rate">—</div><div class="l">blocks/s</div></div>
+</div>
+<div class="bar"><div id="prog"></div></div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Same engine that validates Bitcoin — <code>BlockEngine</code> (structure + context) + <code>ScriptInterpreter.verifyInput</code>
+(ECDSA, pure-JS secp) + a UTXO map, with <code>btm:mainnet</code> params. Proven in <code>test-blocks.mjs</code> (801 blocks,
+every signature). <b>Bounded demo</b> (full replay of ~2.4M blocks needs an assumeUTXO keystone — next); this validates from
+genesis to show the kernel doing real work in the tab.</p>
+
+<script type="module">
+import { Codec } from './engine/codec/codec.js';
+import { P2pEngine } from './engine/codec/p2p.js';
+import { BlockEngine } from './engine/codec/blocks.js';
+import { ScriptEngine } from './engine/codec/script.js';
+import { ScriptInterpreter } from './engine/codec/interpreter.js';
+import { RtcPeer } from './peer-rtc.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
+const MSG_BLOCK = 2;
+let running = false;
+
+function log(m, c) { const d = $('log'); d.innerHTML += `<div class="${c||'dim'}">${m}</div>`; d.scrollTop = d.scrollHeight; }
+const median = (a) => { const s = [...a].sort((x,y)=>x-y); return s[s.length>>1]; };
+
+async function start() {
+  if (running) return; running = true; $('start').disabled = true; $('status').textContent = 'loading engine…';
+  try {
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2pS, chain, validate, script] = await Promise.all(['core','proof','p2p','chain','validate','script'].map(jl));
+    const vectors = await fetch('./data/bitmark.json').then(r => r.json());
+    const codec = new Codec(core, proof, p2pS);
+    const p2p = P2pEngine.fromSchemas(codec, p2pS, chain, 'btm:mainnet');
+    const be = BlockEngine.fromSchemas(codec, chain, validate, script, 'btm:mainnet');
+    const interp = new ScriptInterpreter(codec, ScriptEngine.fromSchemas(script, chain, 'btm:mainnet'));
+    const COUNT = Math.max(1, Math.min(50000, parseInt($('count').value, 10) || 2000));
+
+    $('status').textContent = 'connecting to a Bitmark peer…';
+    const peer = new RtcPeer(p2p, codec);
+    await peer.connect(signalUrl, { room: p2pRoom });
+    log('handshake complete', 'ok');
+
+    // block hashes: genesis + first COUNT (getheaders may need several rounds at 2000/batch)
+    const hashes = [vectors.genesisHash]; let locator = vectors.genesisHash;
+    while (hashes.length <= COUNT) {
+      peer.send('getheaders', { version: 70016, blockLocator: [locator], hashStop: '0'.repeat(64) });
+      const hm = await peer.waitFor(['headers']);
+      const hs = (hm.payload?.entries ?? []).map((e) => codec.blockHash(e.header));
+      if (!hs.length) break;
+      for (const h of hs) { if (hashes.length <= COUNT) hashes.push(h); }
+      locator = hs[hs.length - 1];
+      $('status').innerHTML = `<span class="dim">fetched ${hashes.length} headers…</span>`;
+    }
+    log(`have ${hashes.length} block hashes`, 'ok');
+
+    // download + validate in batches, building the UTXO set
+    const utxo = new Map(); const times = [];
+    let sigs = 0, h = 0; const t0 = performance.now();
+    $('status').innerHTML = '<span class="ok">validating…</span>';
+    for (let i = 0; i < hashes.length && running; i += 30) {
+      const batch = hashes.slice(i, i + 30);
+      const got = new Map();
+      peer.send('getdata', { items: batch.map((hh) => ({ type: MSG_BLOCK, hash: hh })) });
+      await peer.collect('block', batch.length, { onItem: (m) => got.set(codec.blockHash(m.payload.header), m.payload), timeoutMs: 60000 });
+      for (const hh of batch) {
+        const block = got.get(hh); if (!block) throw new Error('missing block at height ' + h);
+        be.validateBlockStructure(block);
+        be.validateBlockContext(block, { height: h, utxo, mtp: times.length >= 11 ? median(times.slice(-11)) : null });
+        for (let t = 1; t < block.transactions.length; t++) {
+          const tx = block.transactions[t];
+          const prevs = tx.inputs.map((inp) => utxo.get(`${inp.prevout.txid}:${inp.prevout.vout}`)?.output);
+          tx.inputs.forEach((inp, k) => { if (prevs[k]) { sigs++; interp.verifyInput(tx, k, prevs[k], prevs); } });
+        }
+        be.applyBlock(utxo, block, h);
+        times.push(block.header.time); h++;
+      }
+      const dt = (performance.now() - t0) / 1000;
+      $('height').textContent = h.toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString();
+      $('sigs').textContent = sigs.toLocaleString(); $('rate').textContent = Math.round(h / dt);
+      $('prog').style.width = (100 * h / hashes.length).toFixed(1) + '%';
+      await new Promise((r) => setTimeout(r, 0));   // yield to the UI
+    }
+    log(`validated ${h} blocks · ${utxo.size} UTXO coins · ${sigs} signatures`, 'ok');
+    $('status').innerHTML = `<span class="ok">✓ ${h.toLocaleString()} blocks fully validated — UTXO set ${utxo.size.toLocaleString()} coins, ${sigs} signatures, 0 failures</span>`;
+    peer.close();
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">${e.message}</span>`; log('error: ' + e.message, 'err');
+  } finally { running = false; $('start').disabled = false; }
+}
+$('start').onclick = start;
+</script>
+</body>
+</html>
