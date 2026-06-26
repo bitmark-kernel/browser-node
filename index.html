@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel / browser-node — a Bitmark node in a browser tab</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.6 var(--mono); max-width:780px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:19px; } h2 { font-size:13px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:24px 0 8px; }
+  a { color:var(--ac2); }
+  .card { display:block; border:1px solid var(--bd); border-radius:8px; padding:12px 14px; margin:8px 0; text-decoration:none; color:inherit; background:var(--pan); }
+  .card:hover { border-color:var(--ac); }
+  .card .t { font-weight:700; } .card .d { color:var(--mut); font-size:13px; margin-top:2px; }
+  .soon { opacity:.5; }
+  .tag { display:inline-block; font-size:11px; border:1px solid var(--bd); border-radius:999px; padding:1px 8px; color:var(--mut); }
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  .ok { color:var(--good); }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node <span class="tag">Bitmark · BTM · live coin</span></h1>
+<p style="color:var(--mut)">A <b>Bitmark node and wallet that run in this browser tab</b> — the
+<a href="https://github.com/bitcoin-kernel/browser-node">bitcoin-kernel/browser-node</a> stack pointed at a real coin.
+The same consensus engine validates Bitmark's chain; the wallet is backed by an <b>ElectrumX</b> server, so it needs
+no full-block download. Keys are generated locally and never leave the tab.</p>
+
+<p class="ok">✓ Foundation live: <code>btm:mainnet</code> params + genesis verified (SHA256d identity hash
+<code>c1fb746e…137cb</code>). <a href="https://github.com/bitmark-kernel/browser-node">source</a></p>
+
+<h2>Pages</h2>
+<a class="card" href="keys.html"><div class="t">keys →</div><div class="d">Generate or import a Bitmark wallet (legacy P2PKH, address prefix <code>b…</code>).</div></a>
+<a class="card" href="wallet.html"><div class="t">wallet →</div><div class="d">Check balance, build + sign a legacy spend, broadcast — over ElectrumX.</div></a>
+<div class="card soon"><div class="t">node <span class="tag">soon</span></div><div class="d">Header sync + structure validation from a Bitmark peer (port 9265), multi-algo PoW difficulty delegated.</div></div>
+
+<h2>Honest corners</h2>
+<p style="color:var(--mut)">Bitmark uses <b>multi-algo PoW</b>; the block-identity hash is SHA256d (validated) but PoW
+<i>difficulty</i> is not re-checked (delegated, as the reference bitmark-kernel does). Wallet balance/UTXOs/broadcast go
+through a trusted ElectrumX index rather than a from-scratch scan. Bitmark has <b>no SegWit</b> — addresses are legacy
+P2PKH (<code>b…</code>, base58 version 85).</p>
+</body>
+</html>

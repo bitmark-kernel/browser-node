@@ -1,0 +1,8 @@
+{
+  "name": "bitmark-kernel-browser-node",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A Bitmark (BTM) node + wallet in a browser tab — bitcoin-kernel/browser-node on a live coin.",
+  "license": "AGPL-3.0-or-later"
+}

@@ -1,0 +1,10 @@
+{
+  "comment": "Bitmark (BTM) mainnet vectors for browser-node: genesis header + reachable infrastructure. Electrum is the wallet backend; P2P peers are for header/block validation.",
+  "network": "btm:mainnet",
+  "genesisHeader": "010000000000000000000000000000000000000000000000000000000000000000000000a80b763e1daee04afd3c0f3d232872c25b670cf31af44b3dae2f2241df5a71d44ac9c253ffff001dcf7fdb00",
+  "genesisHash": "c1fb746e87e89ae75bdec2ef0639a1f6786744639ce3d0ece1dcf979b79137cb",
+  "port": 9265,
+  "peers": ["45.33.65.161"],
+  "dnsSeeds": ["da.bitmark.guru", "btm.openmarks.com", "dnsseed.openmarks.com", "dnsseed.bitmark.cc", "btm.zmark.org"],
+  "electrum": { "host": "electrum.bitmark.rocks", "tcp": 50001, "ssl": 50002 }
+}
