@@ -17,18 +17,26 @@ export class HeaderEngine {
     this.powLimit = BigInt('0x' + params.powLimit);
     this.interval = params.difficultyAdjustmentInterval;
 
+    // Multi-algo networks (Bitmark): the block-identity hash is SHA256d (so linkage
+    // works) but the PoW-validity hash is algo-specific and the version field carries
+    // algo bits — so the PoW/difficulty/version rules don't apply here. We validate
+    // linkage + structure (as the reference bitmark-kernel does) and delegate
+    // difficulty. Set via NetworkParams.multiAlgoPow.
+    const ma = !!this.params.multiAlgoPow;
+
     this.checks = {
       'btc:rule-header-prev-link': (ctx) =>
         ctx.prev == null ? null : ctx.header.prevBlockHash === this.codec.blockHash(ctx.prev),
       'btc:rule-header-pow': (ctx) =>
-        this.codec.checkProofOfWork(ctx.header),
+        ma ? null : this.codec.checkProofOfWork(ctx.header),
       'btc:rule-header-difficulty': (ctx) => {
-        if (ctx.prev == null) return null;
+        if (ma || ctx.prev == null) return null;
         const expected = this.expectedBits(ctx.prev, ctx.height - 1, ctx.epochFirst,
           { header: ctx.header, chainAt: ctx.chainAt });
         return expected == null ? null : ctx.header.bits === expected;
       },
       'btc:rule-header-mtp': (ctx) => {
+        if (ma) return null;   // multi-algo timestamps interleave across algos
         // a window truncated by storage limits (e.g. just after a sync
         // checkpoint) yields a wrong median — skip rather than misjudge
         const need = Math.min(11, ctx.height ?? 11);
@@ -44,6 +52,7 @@ export class HeaderEngine {
         return ctx.header.time >= ctx.prev.time - this.params.maxTimewarp;
       },
       'btc:rule-header-version': (ctx) => {
+        if (ma) return null;   // version field carries multi-algo bits
         if (ctx.height == null) return null;
         const p = this.params;
         const min = ctx.height >= p.bip65Height ? 4

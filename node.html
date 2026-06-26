@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — node (validate the Bitmark chain)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:800px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin:16px 0; }
+  .stat { border:1px solid var(--bd); border-radius:8px; padding:10px 14px; background:var(--pan); min-width:130px; }
+  .stat .n { font-size:22px; } .stat .l { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .bar { height:10px; border:1px solid var(--bd); border-radius:6px; overflow:hidden; background:var(--pan); margin:10px 0; }
+  .bar > div { height:100%; background:var(--ac); width:0; transition:width .3s; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  #log { border:1px solid var(--bd); border-radius:8px; background:var(--pan); padding:8px 10px; height:160px; overflow:auto; font-size:12px; margin-top:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node — node <span class="dim">(validate the Bitmark chain)</span></h1>
+<p class="dim">Sync and <b>validate the Bitmark header chain in this tab</b> with the bitcoin-kernel engine — every header's
+<b>linkage</b> (SHA256d identity) and structure checked as it arrives, streamed from a real Bitmark peer (port 9265)
+over the bridge. Bitmark's PoW is multi-algo, so <b>difficulty is delegated</b> (not re-checked) — the chain's shape is
+validated, not its work. <a href="index.html">home</a> · <a href="wallet.html">wallet</a></p>
+
+<p><button id="start">▶ Start node</button> <span id="status" class="dim">idle</span></p>
+
+<div class="stats">
+  <div class="stat"><div class="n" id="height">0</div><div class="l">headers validated</div></div>
+  <div class="stat"><div class="n" id="tip">—</div><div class="l">peer tip</div></div>
+  <div class="stat"><div class="n ok" id="pct">0%</div><div class="l">synced</div></div>
+  <div class="stat"><div class="n" id="rate">—</div><div class="l">headers/s</div></div>
+</div>
+<div class="bar"><div id="prog"></div></div>
+<div id="log"></div>
+
+<p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
+Headers are validated by the same <code>HeaderEngine</code> that validates Bitcoin, with <code>btm:mainnet</code> params and
+<code>multiAlgoPow:true</code> (PoW + difficulty + version rules skipped, linkage kept). The chain persists to OPFS, so it
+resumes across reloads. Proven in <code>test-headers.mjs</code> (2,000 real headers validated). <b>~2.4M blocks — full sync is slow;</b>
+leave it running.</p>
+
+<script type="module">
+import { connect as liveConnect, syncToTip } from './live-feed.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
+let started = false, t0 = 0, tipH = 0;
+
+function log(m, cls) { const d = $('log'); d.innerHTML += `<div class="${cls || 'dim'}">${m}</div>`; d.scrollTop = d.scrollHeight; }
+function setProgress(h) {
+  $('height').textContent = h.toLocaleString();
+  if (tipH) { const p = Math.min(100, (h / tipH) * 100); $('pct').textContent = p.toFixed(p < 1 ? 2 : 1) + '%'; $('prog').style.width = p + '%'; }
+  const dt = (performance.now() - t0) / 1000; if (dt > 0) $('rate').textContent = Math.round(h / dt).toLocaleString();
+}
+
+async function start() {
+  if (started) return; started = true; $('start').disabled = true; $('status').textContent = 'connecting…';
+  try {
+    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+    const [core, proof, p2p, chain, validate] = await Promise.all(['core','proof','p2p','chain','validate'].map(jl));
+    const vectors = await fetch('./data/bitmark.json').then(r => r.json());
+    const session = await liveConnect({ signalUrl, room: p2pRoom, network: 'btm:mainnet', schemas: { core, proof, p2p, chain, validate }, vectors, persist: true, log: (m, c) => log(m, c) });
+    tipH = session.peer.peerVersion?.startHeight || 0;
+    $('tip').textContent = tipH ? tipH.toLocaleString() : '—';
+    $('status').innerHTML = '<span class="ok">validating headers…</span>';
+    t0 = performance.now();
+    setProgress(session.store.height);
+    await syncToTip(session, { onBatch: ({ tip }) => { setProgress(tip.height); } });
+    $('status').innerHTML = `<span class="ok">✓ at the tip — ${session.store.height.toLocaleString()} headers validated</span>`;
+    log('reached the tip', 'ok');
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">${e.message}</span>`;
+    log('error: ' + e.message, 'err'); started = false; $('start').disabled = false;
+  }
+}
+$('start').onclick = start;
+</script>
+</body>
+</html>

@@ -17,10 +17,10 @@ import { OpfsHeaderStore, opfsAvailable } from './opfs-header-store.js';
 //   bridgeUrl          → WsPeer  (WebSocket↔TCP bridge, e.g. ws://localhost:8334)
 //   signalUrl [+ room] → RtcPeer (WebRTC↔TCP bridge via a signaling server, e.g.
 //                        wss://melvincarvalho.com/.webrtc) — NAT-friendly, no localhost.
-export async function connect({ bridgeUrl, signalUrl, room, schemas, vectors, log, persist = false }) {
+export async function connect({ bridgeUrl, signalUrl, room, schemas, vectors, log, persist = false, network = 'btc:testnet4' }) {
   const codec = new Codec(schemas.core, schemas.proof, schemas.p2p);
-  const p2p = P2pEngine.fromSchemas(codec, schemas.p2p, schemas.chain, 'btc:testnet4');
-  const he = HeaderEngine.fromSchemas(codec, schemas.chain, schemas.validate, 'btc:testnet4');
+  const p2p = P2pEngine.fromSchemas(codec, schemas.p2p, schemas.chain, network);
+  const he = HeaderEngine.fromSchemas(codec, schemas.chain, schemas.validate, network);
   const genesis = codec.decode('BlockHeader', vectors.genesisHeader);
 
   // Persisted (OPFS) store resumes across reloads; otherwise in-memory.
