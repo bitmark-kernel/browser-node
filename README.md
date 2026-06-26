@@ -32,8 +32,25 @@ UTXO set is tiny (chainstate ~97 MB).
 - Wallet UTXO/balance/broadcast go through ElectrumX (trusted index) rather than a
   from-scratch chain scan.
 
+## Pages (live)
+
+- **keys.html** — generate/import a BTM wallet (legacy P2PKH `b…`).
+- **wallet.html** — balance (ElectrumX) → coin-select → legacy sign → broadcast.
+- **explorer.html** — look up any address (balance/UTXOs/history) via ElectrumX.
+- **node.html** — sync + validate the header chain from a peer (linkage + structure).
+
 ## Proofs (node, no browser)
 
 - `test-genesis.mjs` — genesis header hashes to the consensus genesis; params load.
+- `test-keys.mjs` — BIP44 legacy P2PKH derivation → base58 `b…` addresses, round-trip.
+- `test-sign.mjs` / `test-sign-multi.mjs` — legacy sighash signing (single + multi-input) verifies under the engine.
+- `test-electrum.mjs` — ElectrumX protocol (version, tip, scripthash balance/listunspent).
+- `test-headers.mjs` — 2,000 real Bitmark headers validated by the kernel (difficulty delegated).
+
+## Infrastructure
+
+Two byte-pipe bridges (WebRTC↔TCP, via the JSS signaling room) relay browser tabs to:
+the **ElectrumX** server `electrum.bitmark.rocks:50001` (wallet/explorer) and a **Bitmark P2P
+peer** `:9265` (node). The bridges can't forge data; the tab re-verifies what matters.
 
 Generated with [Claude Code](https://claude.com/claude-code).
