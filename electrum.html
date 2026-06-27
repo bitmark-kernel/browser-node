@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — Electrum wallet (Bitmark, BTM)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:800px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } h2 { font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:22px 0 8px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:8px; padding:10px 13px; margin:14px 0; }
+  input { width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; font:inherit; background:var(--pan); color:var(--fg); }
+  label { display:block; color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin:10px 0 3px; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .field { margin:12px 0; } .field .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; background:var(--pan); margin-top:4px; user-select:all; }
+  .secret .v { border-color:var(--bad); background:#fff5f5; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  fieldset { border:1px solid var(--bd); border-radius:8px; padding:4px 14px 14px; margin:0; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; } td, th { border:1px solid var(--bd); padding:6px 9px; text-align:left; } th { color:var(--mut); font-size:12px; }
+  .bal { font-size:22px; } td.addr { word-break:break-all; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node — Electrum wallet <span class="dim">(Bitmark · BTM)</span></h1>
+<p class="dim">A <b>Bitmark wallet in your browser</b>: load a mnemonic, see your balance, and send BTM — signed locally,
+balances and broadcast served by an <b>ElectrumX</b> server over the bridge (no full-block download). Legacy P2PKH
+(no SegWit). Make a wallet on the <a href="keys.html">keys page</a>. <a href="index.html">home</a></p>
+
+<div class="warn-box dim">
+⚠ <b>Real coin.</b> BTM has real value. Your mnemonic is your wallet; it stays in this tab and vanishes on reload.
+Balances/broadcast go through a <b>trusted</b> ElectrumX index; signing is local (keys never leave the tab).</div>
+
+<h2>1 · Load wallet</h2>
+<input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
+<p style="margin-top:8px"><button id="load">▶ Load wallet</button> <span id="loadStatus" class="dim"></span></p>
+<div id="wallet"></div>
+
+<h2>2 · Balance</h2>
+<p><button id="scan" disabled>▶ Check balance (ElectrumX)</button> <span id="scanStatus" class="dim"></span></p>
+<div id="coins"></div>
+
+<h2>3 · Send</h2>
+<fieldset id="spendBox" disabled>
+  <label>send to (Bitmark address, b…)</label><input id="dest" spellcheck="false" placeholder="b…">
+  <div class="row">
+    <div><label>amount (sats · 1 BTM = 100,000,000)</label><input id="amount" inputmode="numeric" placeholder="1000000"></div>
+    <div style="flex:0 0 150px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="10000"></div>
+  </div>
+  <p style="margin-top:12px"><button id="send">▶ Build, sign &amp; broadcast</button> <span id="sendStatus" class="dim"></span></p>
+</fieldset>
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Derives <code>m/44'/177'/0'/{0,1}/i</code> (legacy P2PKH), scans your first 20 receiving + change addresses via ElectrumX,
+selects coins largest-first, signs each input with the LEGACY sighash (the engine's own <code>verifyInput</code> checks the
+tx before broadcast), and pushes it with <code>blockchain.transaction.broadcast</code>. Proven in
+<code>test-keys.mjs</code> / <code>test-sign.mjs</code> / <code>test-sign-multi.mjs</code> / <code>test-electrum.mjs</code>.</p>
+
+<script type="module">
+import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
+import { Codec } from './engine/codec/codec.js';
+import { ScriptEngine, addressToScript } from './engine/codec/script.js';
+import { ScriptInterpreter } from './engine/codec/interpreter.js';
+import { hash160, bytesToHex } from './engine/codec/hash.js';
+import { ElectrumClient } from './electrum-client.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
+const COIN = 177, GAP = 20, DUST = 1000;
+const push = (hex) => (hex.length / 2).toString(16).padStart(2, '0') + hex;
+const fmtBTM = (s) => (s / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+
+let codec = null, se = null, interp = null, seed = null, elec = null;
+let keymap = new Map();   // address → { key, spk, change, index }
+let utxos = [];           // [{ txid, vout, value, spk, address, key }]
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain, core, proof, p2p] = await Promise.all(['script','chain','core','proof','p2p'].map(jl));
+  se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
+  codec = new Codec(core, proof, p2p);
+  interp = new ScriptInterpreter(codec, se);
+}
+
+function at(change, index) {
+  const key = deriveSigningKey(seed, { purpose: 44, coin: COIN, change, index });
+  const spk = '76a914' + bytesToHex(hash160(key.pub)) + '88ac';
+  return { key, spk, address: se.classify(spk).address, change, index };
+}
+
+async function loadWallet() {
+  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('loadStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  seed = await mnemonicToSeed(m, '');
+  keymap = new Map();
+  for (const c of [0, 1]) for (let i = 0; i < GAP; i++) { const e = at(c, i); keymap.set(e.address, e); }
+  let rows = '';
+  for (let i = 0; i < 5; i++) { const e = at(0, i); rows += `<tr><td>0/${i}</td><td class="addr">${e.address}</td></tr>`; }
+  $('wallet').innerHTML = `<div class="field"><div class="k">your receiving addresses — fund one, then check balance</div><table><tr><th style="width:60px">path</th><th>address</th></tr>${rows}</table></div>`;
+  $('scan').disabled = false; $('spendBox').disabled = false;
+  $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (keys in this tab only)</span>';
+}
+
+async function electrum() {
+  if (elec && !elec.closed) return elec;
+  $('scanStatus').innerHTML = '<span class="dim">connecting to ElectrumX over the bridge…</span>';
+  elec = new ElectrumClient();
+  await elec.connect(signalUrl, { room: electrumRoom });
+  await elec.version();
+  return elec;
+}
+
+async function scan() {
+  $('scan').disabled = true;
+  try {
+    const e = await electrum();
+    const tip = await e.tip();
+    $('scanStatus').innerHTML = `<span class="dim">scanning addresses @ height ${tip.height?.toLocaleString?.() ?? tip.height}…</span>`;
+    utxos = [];
+    for (const [address, k] of keymap) {
+      const us = await e.listUnspent(k.spk);
+      for (const u of us) utxos.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, height: u.height, spk: k.spk, address, key: k.key });
+    }
+    const bal = utxos.reduce((s, u) => s + u.value, 0);
+    const rows = utxos.sort((a,b)=>b.value-a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0,16)}…:${u.vout}</td></tr>`).join('');
+    $('coins').innerHTML = `<div class="field"><div class="k">balance</div><div class="bal ok">${fmtBTM(bal)} BTM <span class="dim" style="font-size:13px">(${bal.toLocaleString()} sats · ${utxos.length} UTXOs)</span></div></div>`
+      + (utxos.length ? `<table><tr><th style="width:140px">value (BTM)</th><th>address</th><th>outpoint</th></tr>${rows}</table>` : '<p class="dim">no coins yet — fund one of your addresses above.</p>');
+    $('scanStatus').innerHTML = `<span class="ok">✓ ${utxos.length} UTXO(s) · ${fmtBTM(bal)} BTM</span>`;
+  } catch (err) {
+    $('scanStatus').innerHTML = `<span class="err">scan failed: ${err.message}</span>`;
+  } finally { $('scan').disabled = false; }
+}
+
+async function send() {
+  $('out').innerHTML = ''; $('sendStatus').textContent = '';
+  try {
+    if (!seed) throw new Error('load a wallet first');
+    if (!utxos.length) throw new Error('check balance first (no coins loaded)');
+    const dest = $('dest').value.trim();
+    const amount = parseInt($('amount').value, 10);
+    const fee = parseInt($('fee').value, 10);
+    const destScript = addressToScript(dest, se.params);
+    if (!destScript) throw new Error('destination is not a valid Bitmark address');
+    if (!Number.isInteger(amount) || amount <= 0) throw new Error('amount must be a positive integer (sats)');
+    if (!Number.isInteger(fee) || fee < 0) throw new Error('fee must be a non-negative integer (sats)');
+
+    // coin selection: largest-first until covered
+    const need = amount + fee;
+    const sorted = [...utxos].sort((a,b)=>b.value-a.value);
+    const chosen = []; let sum = 0;
+    for (const u of sorted) { chosen.push(u); sum += u.value; if (sum >= need) break; }
+    if (sum < need) throw new Error(`insufficient funds: have ${fmtBTM(sum)} BTM, need ${fmtBTM(need)} (amount + fee)`);
+    const change = sum - need;
+    const changeAddr = at(0, 0);
+
+    const outputs = [{ value: amount, scriptPubKey: destScript }];
+    if (change >= DUST) outputs.push({ value: change, scriptPubKey: changeAddr.spk });   // change → 0/0
+    const tx = {
+      version: 1, lockTime: 0,
+      inputs: chosen.map((u) => ({ prevout: { txid: u.txid, vout: u.vout }, scriptSig: '', sequence: 0xffffffff })),
+      outputs,
+    };
+    // sign every input over the legacy sighash with its own key
+    chosen.forEach((u, i) => {
+      const sh = interp.sighashLegacy(tx, i, u.spk, 0x01);
+      tx.inputs[i].scriptSig = push(bytesToHex(toDer(signEcdsa(sh, u.key.priv))) + '01') + push(bytesToHex(u.key.pub));
+    });
+    // verify every input under the engine before broadcasting
+    const prevouts = chosen.map((u) => ({ scriptPubKey: u.spk, value: u.value }));
+    chosen.forEach((_, i) => { const r = interp.verifyInput(tx, i, prevouts[i], prevouts); if (r.ok !== true) throw new Error(`engine rejected input ${i}: ${JSON.stringify(r)}`); });
+    const rawHex = codec.encodeHex('Transaction', tx);
+    const localTxid = codec.txid(tx);
+
+    $('out').innerHTML = `<div class="field"><div class="k">✓ signed (${rawHex.length/2} bytes, ${chosen.length} input(s))</div>`
+      + `<table><tr><td class="dim">to ${dest.slice(0,16)}…</td><td>${fmtBTM(amount)} BTM</td></tr>`
+      + (change >= DUST ? `<tr><td class="dim">change → your 0/0</td><td>${fmtBTM(change)} BTM</td></tr>` : `<tr><td class="dim">change</td><td>none (added to fee)</td></tr>`)
+      + `<tr><td class="dim">fee</td><td>${fmtBTM(fee)} BTM</td></tr></table></div>`
+      + `<div class="field secret"><div class="k">raw transaction</div><div class="v">${rawHex}</div></div>`;
+    $('sendStatus').innerHTML = '<span class="dim">broadcasting via ElectrumX…</span>';
+
+    const e = await electrum();
+    const txid = await e.broadcast(rawHex);
+    if (txid !== localTxid) console.warn('server txid differs', txid, localTxid);
+    $('out').innerHTML += `<div class="field"><div class="k ok">✓ broadcast — accepted by the network</div><div class="v">txid ${txid}</div></div>`;
+    $('sendStatus').innerHTML = '<span class="ok">✓ sent</span>';
+    // refresh balance after a moment
+    setTimeout(scan, 1500);
+  } catch (err) {
+    $('sendStatus').innerHTML = `<span class="err">${err.message}</span>`;
+  }
+}
+
+$('load').onclick = loadWallet;
+$('scan').onclick = scan;
+$('send').onclick = send;
+await loadEngine();
+$('loadStatus').textContent = 'engine ready — load a wallet';
+</script>
+</body>
+</html>
