@@ -151,12 +151,14 @@ async function scanNode() {
     const text = await (await fh.getFile()).text();
     const nl = text.indexOf('\n'); const meta = JSON.parse(text.slice(0, nl));
     const byScript = new Map(); for (const [, e] of keymap) byScript.set(e.spk, e);
-    utxos = []; let bal = 0, pos = nl + 1;
+    utxos = []; let bal = 0, pos = nl + 1, scanned = 0;
+    const total = meta.coins || 0;
     while (pos < text.length) {
       let end = text.indexOf('\n', pos); if (end < 0) end = text.length;
       const line = text.slice(pos, end); pos = end + 1; if (!line) continue;
       const [k, v] = JSON.parse(line); const [s, spk] = v.split('\t'); const e = byScript.get(spk);
       if (e) { const c = k.split(':'); utxos.push({ txid: c[0], vout: Number(c[1]), value: Number(s), spk, address: e.address, key: e.key }); bal += Number(s); }
+      if (++scanned % 40000 === 0) { $('scanStatus').innerHTML = `<span class="dim">scanning your node's UTXO set… ${Math.round(100 * scanned / total)}% (${utxos.length} match${utxos.length === 1 ? '' : 'es'})</span>`; await new Promise((r) => setTimeout(r, 0)); }
     }
     const rows = utxos.sort((a, b) => b.value - a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0, 16)}…:${u.vout}</td></tr>`).join('');
     $('coins').innerHTML = `<div class="field"><div class="k">balance — from your own node's validated UTXO set (height ${meta.height?.toLocaleString?.() ?? meta.height}, no Electrum)</div><div class="bal ok">${fmtBTM(bal)} BTM <span class="dim" style="font-size:13px">(${utxos.length} UTXOs of ${meta.coins?.toLocaleString?.() ?? meta.coins} scanned)</span></div></div>`
