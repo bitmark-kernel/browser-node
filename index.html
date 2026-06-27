@@ -23,7 +23,7 @@
 <p style="color:var(--mut)">A <b>Bitmark node and wallet that run in this browser tab</b> — the
 <a href="https://github.com/bitcoin-kernel/browser-node">bitcoin-kernel/browser-node</a> stack pointed at a real coin.
 The same consensus engine validates Bitmark's chain; the wallet is backed by an <b>ElectrumX</b> server, so it needs
-no full-block download. Keys are generated locally and never leave the tab.</p>
+no full-block download. Keys are generated locally and never leave the tab. <a href="how-it-works.html">How it works →</a></p>
 
 <p class="ok">✓ Foundation live: <code>btm:mainnet</code> params + genesis verified (SHA256d identity hash
 <code>c1fb746e…137cb</code>). <a href="https://github.com/bitmark-kernel/browser-node">source</a></p>
@@ -33,6 +33,7 @@ no full-block download. Keys are generated locally and never leave the tab.</p>
 <a class="card" href="wallet.html"><div class="t">wallet →</div><div class="d">Check balance, build + sign a legacy spend, broadcast — over ElectrumX.</div></a>
 <a class="card" href="explorer.html"><div class="t">explorer →</div><div class="d">Look up any Bitmark address — balance, UTXOs, history — via ElectrumX. Watch-only.</div></a>
 <a class="card" href="mempool.html"><div class="t">mempool →</div><div class="d">Watch the unconfirmed mempool for an address — listen to the P2P relay flow in-tab, no API.</div></a>
+<a class="card" href="spv.html"><div class="t">SPV proof →</div><div class="d">Verify a transaction's inclusion in a block locally, with a merkle proof — the server only supplies the branch.</div></a>
 <a class="card" href="mesh.html"><div class="t">mesh →</div><div class="d">Browser↔browser block propagation over WebRTC — tabs form a full mesh and relay real BTM blocks, no server in the data path.</div></a>
 <a class="card" href="node.html"><div class="t">node →</div><div class="d">Sync + validate the Bitmark header chain in-tab from a peer (port 9265); linkage + structure checked, multi-algo PoW difficulty delegated.</div></a>
 <a class="card" href="fullnode.html"><div class="t">full node →</div><div class="d">Load a validated assumeUTXO keystone (bundled or over <b>WebTorrent</b>), validate blocks forward over P2P, and <b>follow the tip</b> — a full node in a tab. Or replay from genesis. No Electrum.</div></a>

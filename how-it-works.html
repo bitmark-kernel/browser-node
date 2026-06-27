@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — how it works</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.65 var(--mono); max-width:760px; margin:24px auto; padding:0 16px 80px; }
+  h1 { font-size:20px; } h2 { font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:26px 0 8px; border-top:1px solid var(--bd); padding-top:16px; }
+  a { color:var(--ac2); } code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+  .ok { color:var(--good); } .mut { color:var(--mut); }
+  ul { padding-left:20px; } li { margin:4px 0; }
+  .diagram { border:1px solid var(--bd); border-radius:8px; background:var(--pan); padding:14px; white-space:pre; overflow-x:auto; font-size:12px; line-height:1.4; }
+</style>
+</head>
+<body>
+<h1>How the Bitmark browser node works</h1>
+<p class="mut">A full <b>Bitmark (BTM)</b> node and wallet that run in a browser tab — no install, no server you have to trust for
+consensus. It's the <a href="https://github.com/bitcoin-kernel/browser-node">bitcoin-kernel/browser-node</a> stack pointed at
+a small, old, <b>live</b> coin. <a href="index.html">← back to the node</a></p>
+
+<h2>The idea</h2>
+<p>The hard part of a node is <b>consensus</b> — deciding which blocks and transactions are valid. That logic is a single
+schema-driven engine (the "kernel"): it validates headers, blocks, scripts and ECDSA signatures, and maintains a UTXO set.
+A coin is just a set of <b>parameters</b> fed to that engine. Bitmark is one more parameter set —
+<code>btm:mainnet</code>: magic <code>f9beb4d9</code>, port <code>9265</code>, P2PKH addresses (<code>b…</code>), 2-minute
+blocks. Same engine, live coin.</p>
+
+<h2>Getting bytes into the tab</h2>
+<p>A browser can't open raw TCP. So everything rides <b>WebRTC</b>:</p>
+<div class="diagram">browser tab ──WebRTC──▶ byte-pipe bridge ──TCP──▶ { Bitmark peer :9265   (blocks, headers, mempool, broadcast)
+                                                        ElectrumX server    (address balances, fast wallet) }
+
+browser tab ◀──WebRTC──▶ browser tab        (the mesh: block propagation, no server in the data path)
+
+WebTorrent swarm ──▶ browser tab            (the assumeUTXO keystone — too big for a web host)</div>
+<p class="mut">The bridges are pure transport — they relay raw bytes and can't forge a block or a balance the tab doesn't
+re-check. They rendezvous in rooms on a WebRTC signaling server (a JavaScript Solid Server pod).</p>
+
+<h2>The full node (follows the tip)</h2>
+<p>Re-validating ~2.4M blocks in a tab is impractical, so — exactly like Bitcoin Core's <b>assumeUTXO</b> — the node loads a
+<b>UTXO snapshot</b> at a recent height (a "keystone"), then validates forward to the tip and follows it:</p>
+<ul>
+  <li><b>Keystone</b> — the UTXO set at the tip (~795k coins), exported from a synced node, distributed over <b>WebTorrent</b>
+  (content-addressed: the swarm verifies every piece against the infohash). <a href="fullnode.html">full node →</a></li>
+  <li><b>Catch up</b> — fetch the few blocks since the keystone over P2P, fully validate each (structure, contextual rules,
+  every signature) against the UTXO set with the kernel.</li>
+  <li><b>Follow</b> — poll for new blocks, validate + apply, stay current.</li>
+</ul>
+
+<h2>The wallet</h2>
+<p>Keys are generated locally and never leave the tab (<a href="keys.html">keys →</a>). The <a href="wallet.html">wallet</a>
+derives legacy P2PKH addresses (Bitmark has no SegWit), reads balances + UTXOs from ElectrumX, selects coins, signs the
+legacy sighash with the bundled WASM secp, checks the tx against the node's own verifier, and broadcasts. You can also
+<a href="explorer.html">look up any address</a>, <a href="mempool.html">watch the mempool</a> for incoming payments, and
+<a href="spv.html">prove a tx's inclusion</a> with a merkle proof.</p>
+
+<h2>Honest corners</h2>
+<ul>
+  <li><b>Multi-algo PoW.</b> Bitmark blocks are mined with several algorithms; the block-identity hash is SHA256d (validated),
+  but PoW <i>difficulty</i> is <b>delegated</b>, not re-checked — the chain's shape is validated, not its accumulated work.</li>
+  <li><b>Electrum for convenience.</b> The wallet reads balances from a trusted ElectrumX index for speed; the full node is the
+  trust-minimized path (its own UTXO set). Signing is always local.</li>
+  <li><b>One historical block</b> carries a bad signature (an old Bitmark bug the network checkpointed past); the validators
+  count it as a known anomaly rather than rejecting the chain.</li>
+</ul>
+
+<p class="mut" style="margin-top:24px">Built on the bitcoin-kernel engine, unchanged — only the parameters differ.
+<a href="https://github.com/bitmark-kernel/browser-node">source</a></p>
+</body>
+</html>

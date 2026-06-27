@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitmark-kernel/browser-node — SPV proof (Bitmark)</title>
+<style>
+  :root { --bg:#fff; --fg:#16181d; --mut:#5b6470; --bd:#e6e8eb; --pan:#fafbfc; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:light; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.55 var(--mono); max-width:800px; margin:24px auto; padding:0 16px 60px; }
+  h1 { font-size:18px; } a { color:var(--ac2); }
+  button { background:var(--pan); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:9px 15px; cursor:pointer; font:inherit; white-space:nowrap; }
+  button:hover { background:#f0f2f4; border-color:var(--ac); }
+  input { font:inherit; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; width:100%; box-sizing:border-box; background:var(--pan); color:var(--fg); }
+  label { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field { margin:12px 0; } .field .k { color:var(--mut); font-size:12px; } .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:6px; padding:8px 9px; background:var(--pan); margin-top:4px; user-select:all; font-size:12px; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:4px; padding:1px 5px; font-size:.92em; }
+</style>
+</head>
+<body>
+<h1>bitmark-kernel / browser-node — SPV proof <span class="dim">(Bitmark · BTM)</span></h1>
+<p class="dim">Verify a transaction is <b>included in a block</b> — locally — with a <b>merkle proof</b>. ElectrumX supplies only the
+<b>merkle branch</b>; this tab folds it with the txid and checks the reconstructed root equals the block header's
+<code>merkleRoot</code>. The server can't fake inclusion. <a href="index.html">home</a> · <a href="explorer.html">explorer</a></p>
+
+<div class="field"><label>transaction id</label><input id="txid" spellcheck="false" placeholder="64 hex chars"></div>
+<div style="display:flex; gap:8px; align-items:flex-end">
+  <div style="flex:0 0 160px"><label>block height</label><input id="height" inputmode="numeric" placeholder="e.g. 2038716"></div>
+  <button id="prove">▶ Prove inclusion</button>
+</div>
+<p id="status" class="dim" style="margin-top:10px">engine loading…</p>
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+The branch comes from <code>blockchain.transaction.get_merkle</code>; the header from <code>blockchain.block.header</code>,
+both over the WebTorrent-less Electrum bridge. Folding + double-SHA256 are the node's own. Find a txid+height in the
+<a href="explorer.html">explorer</a>. Proven in <code>test-spv.mjs</code>. (Bitmark PoW is multi-algo, so this proves
+inclusion under the header chain; difficulty is delegated.)</p>
+
+<script type="module">
+import { ElectrumClient } from './electrum-client.js';
+import { Codec } from './engine/codec/codec.js';
+import { dsha256, hexToBytes, bytesToHex } from './engine/codec/hash.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
+const rev = (h) => bytesToHex(hexToBytes(h).reverse());
+let codec = null, elec = null;
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [core, proof, p2p] = await Promise.all(['core','proof','p2p'].map(jl));
+  codec = new Codec(core, proof, p2p);
+}
+async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(signalUrl, { room: electrumRoom }); await elec.version(); return elec; }
+
+async function prove() {
+  $('prove').disabled = true; $('out').innerHTML = '';
+  try {
+    const txid = $('txid').value.trim().toLowerCase();
+    const height = parseInt($('height').value, 10);
+    if (!/^[0-9a-f]{64}$/.test(txid)) throw new Error('txid must be 64 hex chars');
+    if (!Number.isInteger(height) || height < 0) throw new Error('block height must be a non-negative integer');
+    $('status').innerHTML = '<span class="dim">connecting to ElectrumX…</span>';
+    const e = await electrum();
+    $('status').innerHTML = '<span class="dim">fetching merkle branch + header…</span>';
+    const branch = await e.call('blockchain.transaction.get_merkle', [txid, height]);
+    const headerHex = await e.call('blockchain.block.header', [height]);
+    const header = codec.decode('BlockHeader', headerHex);
+    // fold the branch (internal byte order)
+    let h = hexToBytes(rev(txid)); let pos = branch.pos;
+    for (const b of branch.merkle) { const bb = hexToBytes(rev(b)); h = (pos & 1) ? dsha256(new Uint8Array([...bb, ...h])) : dsha256(new Uint8Array([...h, ...bb])); pos >>= 1; }
+    const root = rev(bytesToHex(h));
+    const ok = root === header.merkleRoot;
+    $('out').innerHTML =
+      `<div class="field"><div class="k">${ok ? '<span class="ok">✓ included in block ' + height + '</span>' : '<span class="err">✗ NOT included — root mismatch</span>'}</div></div>` +
+      `<div class="field"><div class="k">block hash</div><div class="v">${codec.blockHash(header)}</div></div>` +
+      `<div class="field"><div class="k">reconstructed merkle root (from the branch + your txid)</div><div class="v">${root}</div></div>` +
+      `<div class="field"><div class="k">block header merkleRoot</div><div class="v">${header.merkleRoot}</div></div>` +
+      `<div class="field"><div class="k">merkle branch (${branch.merkle.length} hashes, position ${branch.pos})</div><div class="v">${branch.merkle.join('<br>') || '(none — single-tx block)'}</div></div>`;
+    $('status').innerHTML = ok ? '<span class="ok">✓ inclusion verified locally</span>' : '<span class="err">verification failed</span>';
+  } catch (err) { $('status').innerHTML = `<span class="err">${err.message}</span>`; }
+  finally { $('prove').disabled = false; }
+}
+$('prove').onclick = prove;
+await loadEngine();
+$('status').textContent = 'engine ready — enter a txid + height';
+if (q.get('txid') && q.get('height')) { $('txid').value = q.get('txid'); $('height').value = q.get('height'); prove(); }
+</script>
+</body>
+</html>
