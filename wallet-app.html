@@ -213,7 +213,7 @@ let utxos = [];        // current spendable coins (with keys)
 let lastSource = null; // 'node' | 'electrum' — what Refresh repeats
 let histLoaded = false; // History auto-loads once per session, then stays put
 // Follow-tip state: a live UTXO Map this tab validates forward from the snapshot.
-let liveUtxo = null, followPeer = null, followRef = null, followTimes = [], lastFollowPersist = 0;
+let liveUtxo = null, followPeer = null, followRef = null, followTimes = [], lastFollowPersist = 0, followTipH = 0;
 const followState = { running: false };
 
 function setSync(state, text) { $('syncDot').className = 'dot' + (state ? ' ' + state : ''); $('syncTxt').textContent = text; }
@@ -409,8 +409,9 @@ function scanLive() {
   const list = []; let bal = 0;
   for (const [k, c] of liveUtxo) { const e = wallet.byScript.get(c.output.scriptPubKey); if (e) { const i = k.lastIndexOf(':'); list.push({ txid: k.slice(0, i), vout: Number(k.slice(i + 1)), value: c.output.value, spk: c.output.scriptPubKey, address: e.address, key: e.key }); bal += c.output.value; } }
   const h = (followRef?.height || 1) - 1;
-  renderBalance(bal, list, `your node @ ${h.toLocaleString()} (following)`);
-  setSync('ok', `following · ${h.toLocaleString()}`);
+  const behind = followTipH ? Math.max(0, followTipH - h) : 0;
+  renderBalance(bal, list, behind > 0 ? `your node @ ${h.toLocaleString()} · ${behind.toLocaleString()} blocks behind tip — confirmed only` : `your node @ ${h.toLocaleString()} · at tip — confirmed only`);
+  if (behind > 0) setSync('sync', `catching up · ${behind.toLocaleString()} behind`); else setSync('ok', `at tip · ${h.toLocaleString()}`);
 }
 async function persistLive(force = false) {
   if (!force && Date.now() - lastFollowPersist < 180000) return;   // re-write OPFS at most every 3 min
@@ -441,7 +442,7 @@ async function startFollow() {
     setSync('sync', 'following'); scanLive();
     setMsg('connecting to a Bitmark peer…');
     followPeer = await connectPeer(eng, { signalUrl: cfg.signalUrl, room: cfg.p2pRoom });
-    const tipH = followPeer.peerVersion?.startHeight || 0;
+    const tipH = followPeer.peerVersion?.startHeight || 0; followTipH = tipH;
     btn.textContent = '■ Stop following'; btn.disabled = false;
     await catchUp(eng, followPeer, { utxo, times: followTimes, ref: followRef, state: followState, onProgress: ({ height: h, coins }) => {
       st.innerHTML = `<span class="dim">validating ${h.toLocaleString()}${tipH ? ` / ${tipH.toLocaleString()}` : ''} · ${coins.toLocaleString()} coins</span>`;
@@ -458,7 +459,7 @@ async function startFollow() {
   finally { if (!followState.running) { try { followPeer?.close(); } catch {} followPeer = null; btn.textContent = '▶ Follow tip'; btn.disabled = false; } }
 }
 function stopFollow() {
-  followState.running = false; try { followPeer?.close(); } catch {} followPeer = null;
+  followState.running = false; followTipH = 0; try { followPeer?.close(); } catch {} followPeer = null;
   $('followBtn').textContent = '▶ Follow tip'; $('followBtn').disabled = false;
   $('followStatus').innerHTML = '<span class="dim">stopped following</span>';
 }
