@@ -99,12 +99,22 @@
 
   <div class="card tabpanel" id="tab-send">
     <h2>Send</h2>
-    <p class="dim" style="margin-top:0; font-size:13px">Check your balance first (it loads the coins to spend).</p>
-    <label>to (Bitmark address, b…)</label><input id="dest" spellcheck="false" placeholder="b…">
+    <p class="dim" style="margin-top:0; font-size:13px">Available: <b id="sendAvail">—</b> <span id="sendAvailNote">· check Balance to load coins.</span></p>
+    <label>to — Bitmark address (b…)</label>
+    <input id="dest" spellcheck="false" placeholder="b…">
+    <div class="dim" id="destChk" style="font-size:12px; min-height:15px; margin-top:5px"></div>
     <div class="row">
-      <div><label>amount (sats · 1 BTM = 1e8)</label><input id="amount" inputmode="numeric" placeholder="1000000"></div>
-      <div style="flex:0 0 140px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="10000"></div>
+      <div>
+        <label>amount</label>
+        <div style="display:flex; gap:7px">
+          <input id="amount" inputmode="decimal" placeholder="0.0">
+          <button id="amtUnit" type="button" title="toggle unit" style="flex:0 0 62px; padding:10px 0">BTM</button>
+          <button id="maxBtn" type="button" style="flex:0 0 56px; padding:10px 0">Max</button>
+        </div>
+      </div>
+      <div style="flex:0 0 150px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="10000"></div>
     </div>
+    <div class="dim" id="amtHint" style="font-size:12px; margin-top:7px; min-height:15px"></div>
     <p style="margin-top:12px"><button class="primary" id="send">▶ Build, sign &amp; broadcast</button></p>
     <div class="status dim" id="sendStatus"></div>
     <div id="sendOut"></div>
@@ -253,6 +263,7 @@ function tab(name) {
   for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('active', b.dataset.tab === name);
   for (const p of document.querySelectorAll('.tabpanel')) p.classList.toggle('active', p.id === 'tab-' + name);
   if (name === 'network') nodeStatus();
+  if (name === 'send') { updateAvail(); validateSend(); }
 }
 
 // ---- Network tab: node status, in-app bootstrap, editable endpoints ----
@@ -309,7 +320,7 @@ function saveCfg() {
 function resetCfg() { cfg = { ...DEFAULTS }; localStorage.removeItem(LS_KEY); fillCfg(); $('cfgStatus').innerHTML = '<span class="ok">✓ reset to defaults</span>'; }
 
 function renderBalance(balance, list, source) {
-  utxos = list;
+  utxos = list; updateAvail(); validateSend();
   $('hdrBal').textContent = fmtBTM(balance) + ' BTM';
   $('hdrSub').textContent = `${list.length} UTXO(s) · ${source}`;
   const rows = list.sort((a, b) => b.value - a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0,14)}…:${u.vout}</td></tr>`).join('');
@@ -379,13 +390,32 @@ async function loadHistory() {
   finally { $('loadHist').disabled = false; }
 }
 
+// ---- Send: BTM/sats unit, Max, live validation ----
+let amtUnit = 'BTM';
+const sumUtxos = () => utxos.reduce((a, u) => a + u.value, 0);
+const trimBTM = (sats) => (sats / 1e8).toFixed(8).replace(/\.?0+$/, '');
+function amountSats() { const v = parseFloat($('amount').value); if (!isFinite(v) || v <= 0) return NaN; return amtUnit === 'BTM' ? Math.round(v * 1e8) : Math.round(v); }
+function updateAvail() { const has = utxos.length > 0; $('sendAvail').textContent = has ? fmtBTM(sumUtxos()) + ' BTM' : '—'; $('sendAvailNote').textContent = has ? '' : '· check Balance to load coins.'; }
+function validateSend() {
+  const a = $('dest').value.trim();
+  $('destChk').innerHTML = !a ? '' : (addressToScript(a, se.params) ? '<span class="ok">✓ valid Bitmark address</span>' : '<span class="err">✗ not a valid Bitmark address</span>');
+  const sats = amountSats(), fee = parseInt($('fee').value, 10) || 0, avail = sumUtxos();
+  if (isNaN(sats)) { $('amtHint').innerHTML = ''; return; }
+  let msg = (amtUnit === 'BTM' ? `${sats.toLocaleString()} sats` : `${trimBTM(sats)} BTM`) + ` · total with fee ${fmtBTM(sats + fee)} BTM`;
+  if (utxos.length && sats + fee > avail) msg += ' · <span class="err">exceeds available</span>';
+  $('amtHint').innerHTML = `<span class="dim">${msg}</span>`;
+}
+function toggleUnit() { const sats = amountSats(); amtUnit = amtUnit === 'BTM' ? 'sats' : 'BTM'; $('amtUnit').textContent = amtUnit; if (!isNaN(sats)) $('amount').value = amtUnit === 'BTM' ? trimBTM(sats) : String(sats); validateSend(); }
+function setMax() { const fee = parseInt($('fee').value, 10) || 0; const maxSats = Math.max(0, sumUtxos() - fee); $('amount').value = amtUnit === 'BTM' ? trimBTM(maxSats) : String(maxSats); validateSend(); }
+
 async function send() {
   $('sendOut').innerHTML = '';
   try {
     if (!utxos.length) throw new Error('check your balance first (loads the coins to spend)');
     const destScript = addressToScript($('dest').value.trim(), se.params);
     if (!destScript) throw new Error('destination is not a valid Bitmark address');
-    const amount = parseInt($('amount').value, 10), fee = parseInt($('fee').value, 10);
+    const amount = amountSats(); if (isNaN(amount)) throw new Error('enter a valid amount');
+    const fee = parseInt($('fee').value, 10);
     const plan = planSpend({ utxos, destScript, amount, fee, changeSpk: wallet.entries[0].spk, codec, interp });
     $('sendOut').innerHTML = `<div class="field"><div class="dim" style="font-size:12px">signed (${plan.chosen.length} input(s), change ${fmtBTM(plan.change)} BTM)</div><div class="v">${plan.rawHex}</div></div>`;
     $('sendStatus').innerHTML = '<span class="dim">broadcasting over P2P…</span>';
@@ -409,6 +439,9 @@ $('refresh').onclick = refresh;
 $('loadHist').onclick = loadHistory;
 $('rxCopy').onclick = () => copyText($('rxCopy').dataset.addr, $('rxCopy'));
 $('lock').onclick = lock;
+$('amtUnit').onclick = toggleUnit;
+$('maxBtn').onclick = setMax;
+for (const id of ['dest','amount','fee']) $(id).oninput = validateSend;
 $('send').onclick = send;
 $('loadNode').onclick = loadNode;
 $('refreshNode').onclick = nodeStatus;
