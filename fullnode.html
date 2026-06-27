@@ -34,7 +34,6 @@ Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href
 <span id="status" class="dim">idle</span></p>
 <p class="dim" style="margin:0 0 4px">keystone source — a <b>WebTorrent magnet</b> (big snapshots, swarmed P2P) or blank for the small bundled one:</p>
 <input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:… (optional)" style="width:100%; box-sizing:border-box" value="magnet:?xt=urn:btih:9c5df0ec126729f45ff9b3d25afaa5c4d6992942&amp;dn=btm-keystone-2403652.json&amp;tr=wss%3A%2F%2Ftracker.openwebtorrent.com&amp;tr=wss%3A%2F%2Ftracker.webtorrent.dev&amp;tr=wss%3A%2F%2Ftracker.btorrent.xyz">
-<script src="https://cdn.jsdelivr.net/npm/webtorrent@2.8.5/dist/webtorrent.min.js"></script>
 
 <div class="stats">
   <div class="stat"><div class="n" id="height">0</div><div class="l">blocks validated</div></div>
@@ -74,9 +73,15 @@ const median = (a) => { const s = [...a].sort((x,y)=>x-y); return s[s.length>>1]
 // Fetch the keystone snapshot over WebTorrent. The magnet's infohash content-
 // addresses the data, so WebTorrent verifies every piece against it — the snapshot
 // can't be tampered with in transit. Big snapshots live in the swarm, not gh-pages.
-function loadViaWebTorrent(magnet) {
+async function loadViaWebTorrent(magnet) {
+  let WebTorrent;
+  // official prebuilt browser ESM bundle (self-contained), with esm.sh as fallback
+  try { ({ default: WebTorrent } = await import('https://cdn.jsdelivr.net/npm/webtorrent@2.8.5/dist/webtorrent.min.js')); }
+  catch (e1) {
+    try { ({ default: WebTorrent } = await import('https://esm.sh/webtorrent@2.8.5')); }
+    catch (e2) { throw new Error('WebTorrent failed to load: ' + e1.message); }
+  }
   return new Promise((resolve, reject) => {
-    if (typeof WebTorrent === 'undefined') return reject(new Error('WebTorrent failed to load'));
     const client = new WebTorrent();
     client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
     const to = setTimeout(() => reject(new Error('WebTorrent timed out — is a seeder online?')), 120000);
