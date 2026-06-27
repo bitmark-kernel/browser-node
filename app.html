@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitmark Wallet — bitmark-kernel/browser-node</title>
+<style>
+  :root { --bg:#eef1f5; --card:#fff; --fg:#1a1d24; --mut:#69727e; --bd:#e4e7ec; --pan:#f4f6f8; --ac:#e8830c; --ac2:#0969da; --good:#1a7f37; --bad:#cf222e; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color-scheme:light; }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { background:var(--card); color:var(--fg); font:15px/1.55 var(--sans); max-width:680px; margin:28px auto; padding:22px 26px 40px; border:1px solid var(--bd); border-radius:16px; box-shadow:0 1px 3px rgba(20,30,50,.06),0 8px 30px rgba(20,30,50,.05); }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.07em; margin:28px 0 10px; }
+  a { color:var(--ac2); text-decoration:none; } a:hover { text-decoration:underline; }
+  button { background:var(--card); color:var(--fg); border:1px solid var(--bd); border-radius:9px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:filter .12s,border-color .12s,background .12s; }
+  button:hover { border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  #load, #send, #scannode { background:var(--ac); color:#fff; border-color:var(--ac); } #load:hover, #send:hover, #scannode:hover { filter:brightness(1.06); }
+  input { width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:9px; padding:10px 12px; font:inherit; background:var(--card); color:var(--fg); }
+  input:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(232,131,12,.15); }
+  label { display:block; color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin:12px 0 5px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; } .row > div { flex:1; min-width:150px; }
+  .warn-box { border:1px solid var(--ac); background:#fff7ed; border-radius:11px; padding:11px 14px; margin:16px 0; }
+  .field { margin:14px 0; } .field .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .field .v { word-break:break-all; border:1px solid var(--bd); border-radius:9px; padding:10px 12px; background:var(--pan); margin-top:5px; user-select:all; font-family:var(--mono); font-size:13px; }
+  .secret .v { border-color:var(--bad); background:#fff5f5; }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code, .addr { font-family:var(--mono); }
+  code { background:var(--pan); border:1px solid var(--bd); border-radius:5px; padding:1px 5px; font-size:.92em; }
+  fieldset { border:1px solid var(--bd); border-radius:12px; padding:6px 16px 16px; margin:0; background:var(--pan); }
+  table { border-collapse:collapse; width:100%; margin-top:10px; font-family:var(--mono); font-size:13px; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--bd); } tr:last-child td { border-bottom:0; }
+  th { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.04em; font-family:var(--sans); font-weight:700; }
+  .bal { font-size:28px; font-weight:700; } td.addr { word-break:break-all; }
+  @media (max-width:560px) { body { margin:0; border:0; border-radius:0; padding:18px 14px 48px; } button { width:100%; margin-top:6px; } .row { flex-direction:column; } }
+</style>
+</head>
+<body>
+<h1>Bitmark Wallet <span class="dim" style="font-weight:400; font-size:13px">· BTM · in your browser</span></h1>
+<p class="dim">A <b>Bitmark wallet in your browser</b>: load a mnemonic, see your balance, and send BTM — signed locally,
+balances and broadcast served by an <b>ElectrumX</b> server over the bridge (no full-block download). Legacy P2PKH
+(no SegWit). Make a wallet on the <a href="keys.html">keys page</a>. <a href="index.html">home</a></p>
+
+<div class="warn-box dim">
+⚠ <b>Real coin.</b> BTM has real value. Your mnemonic is your wallet; it stays in this tab and vanishes on reload.
+Balances/broadcast go through a <b>trusted</b> ElectrumX index; signing is local (keys never leave the tab).</div>
+
+<h2>1 · Load wallet</h2>
+<input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
+<p style="margin-top:8px"><button id="load">▶ Load wallet</button> <span id="loadStatus" class="dim"></span></p>
+<div id="wallet"></div>
+
+<h2>2 · Balance</h2>
+<p><button id="scannode" disabled>▶ Balance from my node (OPFS)</button> <button id="scan" disabled>▶ Balance (ElectrumX)</button> <span id="scanStatus" class="dim"></span></p>
+<p class="dim" style="margin:-4px 0 0; font-size:12px">Run the <a href="fullnode.html">full node</a> first so it has written its validated UTXO set — then "from my node" reads balance from <b>your own node</b>, no trusted index.</p>
+<div id="coins"></div>
+
+<h2>3 · Send</h2>
+<fieldset id="spendBox" disabled>
+  <label>send to (Bitmark address, b…)</label><input id="dest" spellcheck="false" placeholder="b…">
+  <div class="row">
+    <div><label>amount (sats · 1 BTM = 100,000,000)</label><input id="amount" inputmode="numeric" placeholder="1000000"></div>
+    <div style="flex:0 0 150px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="10000"></div>
+  </div>
+  <p style="margin-top:12px"><button id="send">▶ Build, sign &amp; broadcast</button> <span id="sendStatus" class="dim"></span></p>
+</fieldset>
+<div id="out"></div>
+
+<p class="dim" style="margin-top:18px; border-top:1px solid var(--bd); padding-top:10px">
+Derives <code>m/44'/177'/0'/{0,1}/i</code> (legacy P2PKH), scans your first 20 receiving + change addresses via ElectrumX,
+selects coins largest-first, signs each input with the LEGACY sighash (the engine's own <code>verifyInput</code> checks the
+tx before broadcast), and pushes it with <code>blockchain.transaction.broadcast</code>. Proven in
+<code>test-keys.mjs</code> / <code>test-sign.mjs</code> / <code>test-sign-multi.mjs</code> / <code>test-electrum.mjs</code>.</p>
+
+<script type="module">
+import { mnemonicToSeed, deriveSigningKey, signEcdsa, toDer } from './wasm-keygen.js';
+import { Codec } from './engine/codec/codec.js';
+import { ScriptEngine, addressToScript } from './engine/codec/script.js';
+import { ScriptInterpreter } from './engine/codec/interpreter.js';
+import { hash160, bytesToHex } from './engine/codec/hash.js';
+import { ElectrumClient } from './electrum-client.js';
+import { connect as liveConnect } from './live-feed.js';
+import { broadcastTx } from './broadcast.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
+const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';   // Bitmark P2P bridge room
+const COIN = 177, GAP = 20, DUST = 1000;
+const push = (hex) => (hex.length / 2).toString(16).padStart(2, '0') + hex;
+const fmtBTM = (s) => (s / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+
+let codec = null, se = null, interp = null, seed = null, elec = null;
+let schemas = null, vectors = null;   // for P2P broadcast over the bridge
+let keymap = new Map();   // address → { key, spk, change, index }
+let utxos = [];           // [{ txid, vout, value, spk, address, key }]
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
+  se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
+  codec = new Codec(core, proof, p2p);
+  interp = new ScriptInterpreter(codec, se);
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await fetch('./data/bitmark.json').then(r => r.json());
+}
+
+function at(change, index) {
+  const key = deriveSigningKey(seed, { purpose: 44, coin: COIN, change, index });
+  const spk = '76a914' + bytesToHex(hash160(key.pub)) + '88ac';
+  return { key, spk, address: se.classify(spk).address, change, index };
+}
+
+async function loadWallet() {
+  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('loadStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  seed = await mnemonicToSeed(m, '');
+  keymap = new Map();
+  for (const c of [0, 1]) for (let i = 0; i < GAP; i++) { const e = at(c, i); keymap.set(e.address, e); }
+  let rows = '';
+  for (let i = 0; i < 5; i++) { const e = at(0, i); rows += `<tr><td>0/${i}</td><td class="addr">${e.address}</td></tr>`; }
+  $('wallet').innerHTML = `<div class="field"><div class="k">your receiving addresses — fund one, then check balance</div><table><tr><th style="width:60px">path</th><th>address</th></tr>${rows}</table></div>`;
+  $('scan').disabled = false; $('scannode').disabled = false; $('spendBox').disabled = false;
+  $('loadStatus').innerHTML = '<span class="ok">✓ wallet loaded (keys in this tab only)</span>';
+}
+
+async function electrum() {
+  if (elec && !elec.closed) return elec;
+  $('scanStatus').innerHTML = '<span class="dim">connecting to ElectrumX over the bridge…</span>';
+  elec = new ElectrumClient();
+  await elec.connect(signalUrl, { room: electrumRoom });
+  await elec.version();
+  return elec;
+}
+
+async function scan() {
+  $('scan').disabled = true;
+  try {
+    const e = await electrum();
+    const tip = await e.tip();
+    $('scanStatus').innerHTML = `<span class="dim">scanning addresses @ height ${tip.height?.toLocaleString?.() ?? tip.height}…</span>`;
+    utxos = [];
+    for (const [address, k] of keymap) {
+      const us = await e.listUnspent(k.spk);
+      for (const u of us) utxos.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, height: u.height, spk: k.spk, address, key: k.key });
+    }
+    const bal = utxos.reduce((s, u) => s + u.value, 0);
+    const rows = utxos.sort((a,b)=>b.value-a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0,16)}…:${u.vout}</td></tr>`).join('');
+    $('coins').innerHTML = `<div class="field"><div class="k">balance</div><div class="bal ok">${fmtBTM(bal)} BTM <span class="dim" style="font-size:13px">(${bal.toLocaleString()} sats · ${utxos.length} UTXOs)</span></div></div>`
+      + (utxos.length ? `<table><tr><th style="width:140px">value (BTM)</th><th>address</th><th>outpoint</th></tr>${rows}</table>` : '<p class="dim">no coins yet — fund one of your addresses above.</p>');
+    $('scanStatus').innerHTML = `<span class="ok">✓ ${utxos.length} UTXO(s) · ${fmtBTM(bal)} BTM</span>`;
+  } catch (err) {
+    $('scanStatus').innerHTML = `<span class="err">scan failed: ${err.message}</span>`;
+  } finally { $('scan').disabled = false; }
+}
+
+// Balance from YOUR OWN node: read the UTXO set fullnode.html persisted to OPFS,
+// match it against your addresses. No Electrum. Fills the same `utxos` array, so
+// coin selection + signing below work unchanged.
+async function scanNode() {
+  $('scannode').disabled = true;
+  try {
+    if (!navigator.storage?.getDirectory) throw new Error('OPFS not available in this browser');
+    const root = await navigator.storage.getDirectory();
+    let fh; try { fh = await root.getFileHandle('btm-utxo.json'); } catch { throw new Error('no node UTXO set yet — open fullnode.html, load the keystone, wait for "persisted … to OPFS"'); }
+    $('scanStatus').innerHTML = '<span class="dim">reading your node\'s UTXO set from OPFS…</span>';
+    const text = await (await fh.getFile()).text();
+    const nl = text.indexOf('\n'); const meta = JSON.parse(text.slice(0, nl));
+    const byScript = new Map(); for (const [, e] of keymap) byScript.set(e.spk, e);
+    utxos = []; let bal = 0, pos = nl + 1, scanned = 0;
+    const total = meta.coins || 0;
+    while (pos < text.length) {
+      let end = text.indexOf('\n', pos); if (end < 0) end = text.length;
+      const line = text.slice(pos, end); pos = end + 1; if (!line) continue;
+      const [k, v] = JSON.parse(line); const [s, spk] = v.split('\t'); const e = byScript.get(spk);
+      if (e) { const c = k.split(':'); utxos.push({ txid: c[0], vout: Number(c[1]), value: Number(s), spk, address: e.address, key: e.key }); bal += Number(s); }
+      if (++scanned % 40000 === 0) { $('scanStatus').innerHTML = `<span class="dim">scanning your node's UTXO set… ${Math.round(100 * scanned / total)}% (${utxos.length} match${utxos.length === 1 ? '' : 'es'})</span>`; await new Promise((r) => setTimeout(r, 0)); }
+    }
+    const rows = utxos.sort((a, b) => b.value - a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0, 16)}…:${u.vout}</td></tr>`).join('');
+    $('coins').innerHTML = `<div class="field"><div class="k">balance — from your own node's validated UTXO set (height ${meta.height?.toLocaleString?.() ?? meta.height}, no Electrum)</div><div class="bal ok">${fmtBTM(bal)} BTM <span class="dim" style="font-size:13px">(${utxos.length} UTXOs of ${meta.coins?.toLocaleString?.() ?? meta.coins} scanned)</span></div></div>`
+      + (utxos.length ? `<table><tr><th style="width:140px">value (BTM)</th><th>address</th><th>outpoint</th></tr>${rows}</table>` : '<p class="dim">no coins for your addresses in the node\'s set.</p>');
+    $('scanStatus').innerHTML = `<span class="ok">✓ ${utxos.length} UTXO(s) · ${fmtBTM(bal)} BTM · from your node</span>`;
+  } catch (err) {
+    $('scanStatus').innerHTML = `<span class="err">${err.message}</span>`;
+  } finally { $('scannode').disabled = false; }
+}
+
+async function send() {
+  $('out').innerHTML = ''; $('sendStatus').textContent = '';
+  try {
+    if (!seed) throw new Error('load a wallet first');
+    if (!utxos.length) throw new Error('check balance first (no coins loaded)');
+    const dest = $('dest').value.trim();
+    const amount = parseInt($('amount').value, 10);
+    const fee = parseInt($('fee').value, 10);
+    const destScript = addressToScript(dest, se.params);
+    if (!destScript) throw new Error('destination is not a valid Bitmark address');
+    if (!Number.isInteger(amount) || amount <= 0) throw new Error('amount must be a positive integer (sats)');
+    if (!Number.isInteger(fee) || fee < 0) throw new Error('fee must be a non-negative integer (sats)');
+
+    // coin selection: largest-first until covered
+    const need = amount + fee;
+    const sorted = [...utxos].sort((a,b)=>b.value-a.value);
+    const chosen = []; let sum = 0;
+    for (const u of sorted) { chosen.push(u); sum += u.value; if (sum >= need) break; }
+    if (sum < need) throw new Error(`insufficient funds: have ${fmtBTM(sum)} BTM, need ${fmtBTM(need)} (amount + fee)`);
+    const change = sum - need;
+    const changeAddr = at(0, 0);
+
+    const outputs = [{ value: amount, scriptPubKey: destScript }];
+    if (change >= DUST) outputs.push({ value: change, scriptPubKey: changeAddr.spk });   // change → 0/0
+    const tx = {
+      version: 1, lockTime: 0,
+      inputs: chosen.map((u) => ({ prevout: { txid: u.txid, vout: u.vout }, scriptSig: '', sequence: 0xffffffff })),
+      outputs,
+    };
+    // sign every input over the legacy sighash with its own key
+    chosen.forEach((u, i) => {
+      const sh = interp.sighashLegacy(tx, i, u.spk, 0x01);
+      tx.inputs[i].scriptSig = push(bytesToHex(toDer(signEcdsa(sh, u.key.priv))) + '01') + push(bytesToHex(u.key.pub));
+    });
+    // verify every input under the engine before broadcasting
+    const prevouts = chosen.map((u) => ({ scriptPubKey: u.spk, value: u.value }));
+    chosen.forEach((_, i) => { const r = interp.verifyInput(tx, i, prevouts[i], prevouts); if (r.ok !== true) throw new Error(`engine rejected input ${i}: ${JSON.stringify(r)}`); });
+    const rawHex = codec.encodeHex('Transaction', tx);
+    const localTxid = codec.txid(tx);
+
+    $('out').innerHTML = `<div class="field"><div class="k">✓ signed (${rawHex.length/2} bytes, ${chosen.length} input(s))</div>`
+      + `<table><tr><td class="dim">to ${dest.slice(0,16)}…</td><td>${fmtBTM(amount)} BTM</td></tr>`
+      + (change >= DUST ? `<tr><td class="dim">change → your 0/0</td><td>${fmtBTM(change)} BTM</td></tr>` : `<tr><td class="dim">change</td><td>none (added to fee)</td></tr>`)
+      + `<tr><td class="dim">fee</td><td>${fmtBTM(fee)} BTM</td></tr></table></div>`
+      + `<div class="field secret"><div class="k">raw transaction</div><div class="v">${rawHex}</div></div>`;
+    // broadcast over the P2P bridge (mirror bitcoin-kernel: inv→getdata→tx, no trusted
+    // service), with ElectrumX as fallback if no peer admits it.
+    let txid = localTxid, via = null;
+    $('sendStatus').innerHTML = '<span class="dim">broadcasting over P2P (bridge → Bitmark peer)…</span>';
+    try {
+      const session = await liveConnect({ signalUrl, room: p2pRoom, network: 'btm:mainnet', schemas, vectors, log: (m) => { $('sendStatus').innerHTML = `<span class="dim">P2P: ${m}</span>`; } });
+      const r = await broadcastTx(session.peer, tx, codec);
+      try { session.peer.close(); } catch {}
+      if (r.accepted === true) via = `P2P (${r.detail})`;
+      else $('sendStatus').innerHTML = `<span class="dim">P2P: ${r.detail} — falling back to ElectrumX…</span>`;
+    } catch (e) { $('sendStatus').innerHTML = `<span class="dim">P2P unavailable (${e.message}) — falling back to ElectrumX…</span>`; }
+    if (!via) { const e = await electrum(); txid = await e.broadcast(rawHex); via = 'ElectrumX (fallback)'; }
+    $('out').innerHTML += `<div class="field"><div class="k ok">✓ broadcast via ${via}</div><div class="v">txid ${txid}</div></div>`;
+    $('sendStatus').innerHTML = `<span class="ok">✓ sent via ${via}</span> <span class="dim">— re-check balance to refresh</span>`;
+  } catch (err) {
+    $('sendStatus').innerHTML = `<span class="err">${err.message}</span>`;
+  }
+}
+
+$('load').onclick = loadWallet;
+$('scan').onclick = scan;
+$('scannode').onclick = scanNode;
+$('send').onclick = send;
+await loadEngine();
+$('loadStatus').textContent = 'engine ready — load a wallet';
+</script>
+</body>
+</html>
