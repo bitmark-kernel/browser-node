@@ -51,8 +51,10 @@ re-check. They rendezvous in rooms on a WebRTC signaling server (a JavaScript So
 
 <h2>The wallet</h2>
 <p>Keys are generated locally and never leave the tab (<a href="keys.html">keys →</a>). The <a href="wallet.html">wallet</a>
-derives legacy P2PKH addresses (Bitmark has no SegWit), reads balances + UTXOs from ElectrumX, selects coins, signs the
-legacy sighash with the bundled WASM secp, checks the tx against the node's own verifier, and broadcasts. You can also
+derives legacy P2PKH addresses (Bitmark has no SegWit), reads balance + UTXOs <b>from your own node's validated UTXO set</b>
+(the set <a href="fullnode.html">fullnode</a> persists to OPFS — no trusted index), selects coins, signs the legacy sighash
+with the bundled WASM secp, checks the tx against the node's own verifier, and <b>broadcasts peer-to-peer</b> over the
+bridge. ElectrumX remains a one-click fallback for balance and broadcast (<a href="electrum.html">electrum.html</a>). You can also
 <a href="explorer.html">look up any address</a>, <a href="mempool.html">watch the mempool</a> for incoming payments, and
 <a href="spv.html">prove a tx's inclusion</a> with a merkle proof.</p>
 

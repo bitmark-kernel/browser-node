@@ -35,7 +35,8 @@ UTXO set is tiny (chainstate ~97 MB).
 ## Pages (live)
 
 - **keys.html** — generate/import a BTM wallet (legacy P2PKH `b…`).
-- **wallet.html** — balance (ElectrumX) → coin-select → legacy sign → broadcast.
+- **wallet.html** — node-backed wallet: balance from your own validated UTXO set (OPFS, written by fullnode.html) → coin-select → legacy sign → **broadcast P2P** over the bridge. No trusted index in the path; Electrum balance + broadcast remain as fallbacks.
+- **electrum.html** — the ElectrumX-backed wallet (fast/convenience), kept as a working fallback.
 - **explorer.html** — look up any address (balance/UTXOs/history) via ElectrumX.
 - **mempool.html** — watch the unconfirmed mempool for an address (P2P relay flow, in-tab, no API).
 - **spv.html** — verify a tx's inclusion in a block locally with a merkle proof (server supplies only the branch).
