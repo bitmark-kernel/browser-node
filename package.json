@@ -4,5 +4,8 @@
   "private": true,
   "type": "module",
   "description": "A Bitmark (BTM) node + wallet in a browser tab — bitcoin-kernel/browser-node on a live coin.",
-  "license": "AGPL-3.0-or-later"
+  "license": "AGPL-3.0-or-later",
+  "devDependencies": {
+    "webtorrent": "^2.8.5"
+  }
 }

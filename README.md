@@ -70,4 +70,13 @@ Two byte-pipe bridges (WebRTC↔TCP, via the JSS signaling room) relay browser t
 the **ElectrumX** server `electrum.bitmark.rocks:50001` (wallet/explorer) and a **Bitmark P2P
 peer** `:9265` (node). The bridges can't forge data; the tab re-verifies what matters.
 
+## Data distribution: small on gh-pages, big over WebTorrent
+
+gh-pages hosts the app + a tiny bundled keystone (50k, ~877 KB). A **near-tip** assumeUTXO
+snapshot (hundreds of MB) is too big for gh-pages, so it's distributed over **WebTorrent**: the
+infohash content-addresses it (the swarm verifies every piece), and `fullnode.html` loads it by
+magnet. Seed it from any desktop/server — `node seed-snapshot.mjs <file>` or WebTorrent Desktop —
+and paste the magnet into the keystone field. Proven swarm round-trip: a second client fetched the
+bundled keystone by magnet, infohash-verified. (Demo 50k magnet infohash: `5b72c1d4…f198`.)
+
 Generated with [Claude Code](https://claude.com/claude-code).
