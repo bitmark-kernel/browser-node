@@ -15,6 +15,8 @@
   header .sub { color:#c3c5e8; font-size:13px; margin-top:3px; } header a { color:#e9e7ff; text-decoration:underline; }
   .card { background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:14px 18px 18px; margin:14px 0; box-shadow:0 1px 3px rgba(20,30,50,.05); }
   h2 { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.07em; margin:2px 0 12px; }
+  h3 { font-size:13px; margin:20px 0 2px; color:var(--fg); }
+  .pill { display:inline-block; font-size:11px; border:1px solid var(--bd); border-radius:999px; padding:1px 9px; color:var(--mut); }
   button { background:var(--card); color:var(--fg); border:1px solid var(--bd); border-radius:9px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:filter .12s,border-color .12s,background .12s; }
   button:hover { border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
   .primary { background:var(--ac); color:#fff; border-color:var(--ac); } .primary:hover { filter:brightness(1.07); }
@@ -58,6 +60,7 @@
     <button data-tab="receive">Receive</button>
     <button data-tab="balance" class="active">Balance</button>
     <button data-tab="send">Send</button>
+    <button data-tab="network">Network</button>
   </div>
 
   <div class="card tabpanel" id="tab-receive">
@@ -69,7 +72,7 @@
   <div class="card tabpanel active" id="tab-balance">
     <h2>Balance</h2>
     <p style="margin:0"><button class="primary" id="balNode">▶ From my node</button> <button id="balElectrum">Electrum</button></p>
-    <p class="dim" style="margin:8px 0 0; font-size:12px">"From my node" reads <a href="fullnode.html">your full node's</a> validated UTXO set (OPFS) — no trusted index.</p>
+    <p class="dim" style="margin:8px 0 0; font-size:12px">"From my node" reads your node's UTXO set (OPFS) — no trusted index. Load it once in the <b>Network</b> tab.</p>
     <div class="status dim" id="balStatus"></div>
     <div id="balOut"></div>
   </div>
@@ -86,6 +89,26 @@
     <div class="status dim" id="sendStatus"></div>
     <div id="sendOut"></div>
   </div>
+
+  <div class="card tabpanel" id="tab-network">
+    <h2>Network — your node &amp; connections</h2>
+    <p class="dim" style="margin-top:0; font-size:13px">What makes this standalone: see what the wallet is connected to, bootstrap your own node here, and edit every endpoint. Saved in this browser.</p>
+
+    <h3>Node <span class="pill">your UTXO set</span></h3>
+    <div class="status dim" id="nodeStatus">checking…</div>
+    <label>keystone magnet — an assumeUTXO snapshot, integrity-verified by WebTorrent</label>
+    <input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:…">
+    <p style="margin-top:10px"><button class="primary" id="loadNode">▶ Load node snapshot</button> <button id="refreshNode">Refresh</button></p>
+    <div class="status dim" id="nodeLoadStatus"></div>
+    <p class="dim" style="font-size:12px">Loads the snapshot into this browser (OPFS) so Balance → <b>From my node</b> works with no trusted index. For full forward-validation + tip-following, run <a href="fullnode.html">fullnode.html</a>.</p>
+
+    <h3>Connections <span class="pill">WebRTC bridges</span></h3>
+    <label>WebRTC signaling server</label><input id="cfgSignal" spellcheck="false">
+    <label>Electrum bridge room</label><input id="cfgElectrumRoom" spellcheck="false">
+    <label>P2P bridge room (broadcast)</label><input id="cfgP2pRoom" spellcheck="false">
+    <p style="margin-top:12px"><button class="primary" id="saveCfg">Save settings</button> <button id="testElec">Test Electrum</button> <button id="resetCfg">Reset</button></p>
+    <div class="status dim" id="cfgStatus"></div>
+  </div>
 </div>
 
 <script type="module">
@@ -100,11 +123,43 @@ import { broadcastTx } from './broadcast.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
-const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
-const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
-const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
 const fmtBTM = (s) => (s / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
 const tick = () => new Promise((r) => setTimeout(r, 0));
+
+// Editable, persisted network config — query params seed it once, then the Network
+// tab can override + save to localStorage. This is what makes the app standalone:
+// every backend it talks to is visible and changeable from one page.
+const LS_KEY = 'btm-wallet-cfg';
+const DEFAULTS = {
+  signalUrl: 'wss://melvincarvalho.com/.webrtc',
+  electrumRoom: 'e1ec47aabbccddee0011',
+  p2pRoom: 'b17ec0de92650001',
+  magnet: 'magnet:?xt=urn:btih:ed9c7f0b5af82880789cf861ffdbb4477021f987&dn=keystone-tip.json&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com',
+};
+let cfg = { ...DEFAULTS, ...(() => { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } })() };
+for (const [p, k] of [['signal','signalUrl'],['electrumRoom','electrumRoom'],['p2pRoom','p2pRoom'],['magnet','magnet']]) { const v = q.get(p); if (v) cfg[k] = v; }
+
+// Fetch the keystone over WebTorrent — the magnet's infohash content-addresses the
+// data, so every piece is verified in transit. Same loader fullnode.html uses.
+async function loadViaWebTorrent(magnet, onProg) {
+  let WebTorrent;
+  try { ({ default: WebTorrent } = await import('https://cdn.jsdelivr.net/npm/webtorrent@2.8.5/dist/webtorrent.min.js')); }
+  catch (e1) { try { ({ default: WebTorrent } = await import('https://esm.sh/webtorrent@2.8.5')); } catch { throw new Error('WebTorrent failed to load: ' + e1.message); } }
+  return new Promise((resolve, reject) => {
+    const client = new WebTorrent();
+    client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
+    let stall; const arm = (ms, msg) => { clearTimeout(stall); stall = setTimeout(() => { try { client.destroy(); } catch {} reject(new Error(msg)); }, ms); };
+    arm(70000, 'no data in 70s — no seeder reachable? (seed the keystone from a desktop, or load it in fullnode.html first)');
+    client.add(magnet, (torrent) => {
+      onProg(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB)`);
+      torrent.on('download', () => { arm(70000, 'download stalled (no data for 70s)'); onProg(`${(100 * torrent.progress).toFixed(1)}% · ${(torrent.downloaded / 1e6).toFixed(0)}/${(torrent.length / 1e6).toFixed(0)} MB · ${(torrent.downloadSpeed / 1e6).toFixed(2)} MB/s · ${torrent.numPeers} peer(s)`); });
+      const file = torrent.files[0];
+      const done = (buf) => { clearTimeout(stall); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
+      if (file.arrayBuffer) file.arrayBuffer().then((b) => done(new Uint8Array(b))).catch(reject);
+      else file.getBuffer((err, b) => err ? reject(err) : done(b));
+    });
+  });
+}
 
 let codec, se, interp, schemas, vectors, elec = null;
 let wallet = null;     // { entries, byScript }
@@ -119,7 +174,7 @@ async function loadEngine() {
   schemas = { core, proof, p2p, chain, validate };
   vectors = await fetch('./data/bitmark.json').then(r => r.json());
 }
-async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(signalUrl, { room: electrumRoom }); await elec.version(); return elec; }
+async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(cfg.signalUrl, { room: cfg.electrumRoom }); await elec.version(); return elec; }
 
 function unlock() {
   const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
@@ -134,7 +189,61 @@ function unlock() {
 function tab(name) {
   for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('active', b.dataset.tab === name);
   for (const p of document.querySelectorAll('.tabpanel')) p.classList.toggle('active', p.id === 'tab-' + name);
+  if (name === 'network') nodeStatus();
 }
+
+// ---- Network tab: node status, in-app bootstrap, editable endpoints ----
+async function nodeStatus() {
+  const el = $('nodeStatus');
+  try {
+    if (!navigator.storage?.getDirectory) { el.innerHTML = '<span class="err">OPFS not available in this browser</span>'; return; }
+    const root = await navigator.storage.getDirectory();
+    let fh; try { fh = await root.getFileHandle('btm-utxo.json'); } catch { el.innerHTML = '<span class="dim">no node snapshot yet — load one below to go standalone.</span>'; return; }
+    const f = await fh.getFile(); const head = await f.slice(0, 4096).text(); const meta = JSON.parse(head.slice(0, head.indexOf('\n')));
+    el.innerHTML = `<span class="ok">✓ snapshot present</span> · height ${meta.height?.toLocaleString?.() ?? meta.height} · ${(meta.coins || 0).toLocaleString()} coins · ${(f.size / 1e6).toFixed(0)} MB`;
+  } catch (e) { el.innerHTML = `<span class="err">${e.message}</span>`; }
+}
+
+async function loadNode() {
+  $('loadNode').disabled = true; const st = $('nodeLoadStatus');
+  try {
+    const magnet = $('magnet').value.trim(); if (!magnet) throw new Error('paste a keystone magnet');
+    if (!navigator.storage?.getDirectory) throw new Error('OPFS not available in this browser');
+    st.innerHTML = '<span class="dim">fetching keystone over WebTorrent…</span>';
+    const text = await loadViaWebTorrent(magnet, (m) => { st.innerHTML = `<span class="dim">${m}</span>`; });
+    st.innerHTML = '<span class="dim">writing snapshot to OPFS…</span>';
+    const nl = text.indexOf('\n'); const meta = JSON.parse(text.slice(0, nl)); const body = text.slice(nl + 1);
+    let coins = 0; for (let i = 0; i < body.length; i++) if (body.charCodeAt(i) === 10) coins++;
+    if (body.length && body[body.length - 1] !== '\n') coins++;
+    const root = await navigator.storage.getDirectory();
+    const w = await (await root.getFileHandle('btm-utxo.json', { create: true })).createWritable();
+    await w.write(JSON.stringify({ network: 'btm:mainnet', height: meta.height, coins }) + '\n');
+    for (let i = 0; i < body.length; i += (1 << 20)) await w.write(body.slice(i, i + (1 << 20)));
+    await w.close();
+    st.innerHTML = `<span class="ok">✓ snapshot saved — ${coins.toLocaleString()} coins @ height ${meta.height?.toLocaleString?.() ?? meta.height}. Balance → From my node now works.</span>`;
+    nodeStatus();
+  } catch (e) { st.innerHTML = `<span class="err">${e.message}</span>`; }
+  finally { $('loadNode').disabled = false; }
+}
+
+async function testElectrum() {
+  const st = $('cfgStatus'); $('testElec').disabled = true;
+  try { st.innerHTML = '<span class="dim">connecting…</span>'; const e = await electrum(); const v = await e.version(); st.innerHTML = `<span class="ok">✓ Electrum reachable — ${Array.isArray(v) ? v.join(' ') : v}</span>`; }
+  catch (e) { st.innerHTML = `<span class="err">${e.message}</span>`; }
+  finally { $('testElec').disabled = false; }
+}
+
+function fillCfg() { $('cfgSignal').value = cfg.signalUrl; $('cfgElectrumRoom').value = cfg.electrumRoom; $('cfgP2pRoom').value = cfg.p2pRoom; $('magnet').value = cfg.magnet; }
+function saveCfg() {
+  cfg.signalUrl = $('cfgSignal').value.trim() || DEFAULTS.signalUrl;
+  cfg.electrumRoom = $('cfgElectrumRoom').value.trim() || DEFAULTS.electrumRoom;
+  cfg.p2pRoom = $('cfgP2pRoom').value.trim() || DEFAULTS.p2pRoom;
+  cfg.magnet = $('magnet').value.trim() || DEFAULTS.magnet;
+  localStorage.setItem(LS_KEY, JSON.stringify(cfg));
+  if (elec) { try { elec.close(); } catch {} elec = null; }   // reconnect with new endpoints next call
+  $('cfgStatus').innerHTML = '<span class="ok">✓ saved to this browser</span>';
+}
+function resetCfg() { cfg = { ...DEFAULTS }; localStorage.removeItem(LS_KEY); fillCfg(); $('cfgStatus').innerHTML = '<span class="ok">✓ reset to defaults</span>'; }
 
 function renderBalance(balance, list, source) {
   utxos = list;
@@ -148,7 +257,7 @@ async function balNode() {
   try {
     if (!navigator.storage?.getDirectory) throw new Error('OPFS not available in this browser');
     const root = await navigator.storage.getDirectory();
-    let fh; try { fh = await root.getFileHandle('btm-utxo.json'); } catch { throw new Error('no node UTXO set yet — open fullnode.html, load the keystone, wait for "persisted …"'); }
+    let fh; try { fh = await root.getFileHandle('btm-utxo.json'); } catch { throw new Error('no node snapshot yet — load one in the Network tab (or run fullnode.html)'); }
     $('balStatus').innerHTML = '<span class="dim">reading your node\'s UTXO set…</span>';
     const text = await (await fh.getFile()).text();
     const nl = text.indexOf('\n'); const meta = JSON.parse(text.slice(0, nl));
@@ -191,7 +300,7 @@ async function send() {
     $('sendStatus').innerHTML = '<span class="dim">broadcasting over P2P…</span>';
     let via = null, txid = plan.txid;
     try {
-      const s = await liveConnect({ signalUrl, room: p2pRoom, network: 'btm:mainnet', schemas, vectors, log: (m) => { $('sendStatus').innerHTML = `<span class="dim">P2P: ${m}</span>`; } });
+      const s = await liveConnect({ signalUrl: cfg.signalUrl, room: cfg.p2pRoom, network: 'btm:mainnet', schemas, vectors, log: (m) => { $('sendStatus').innerHTML = `<span class="dim">P2P: ${m}</span>`; } });
       const r = await broadcastTx(s.peer, plan.tx, codec); try { s.peer.close(); } catch {}
       if (r.accepted === true) via = 'P2P';
     } catch (e) { /* fall through */ }
@@ -206,6 +315,12 @@ for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => tab
 $('balNode').onclick = balNode;
 $('balElectrum').onclick = balElectrum;
 $('send').onclick = send;
+$('loadNode').onclick = loadNode;
+$('refreshNode').onclick = nodeStatus;
+$('saveCfg').onclick = saveCfg;
+$('testElec').onclick = testElectrum;
+$('resetCfg').onclick = resetCfg;
+fillCfg();
 await loadEngine();
 $('unlockStatus').textContent = 'engine ready — enter your mnemonic';
 </script>
