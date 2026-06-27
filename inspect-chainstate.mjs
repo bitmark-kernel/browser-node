@@ -1,5 +1,14 @@
 import { ClassicLevel } from 'classic-level';
-const db = new ClassicLevel(process.env.HOME + '/bitmark-bench/chainstate', { keyEncoding: 'buffer', valueEncoding: 'buffer' });
+import { cp, rm, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Never open the live node DB read-write (classic-level has no read-only mode and
+// would take the lock + rewrite files). Read a throwaway copy instead.
+const DIR = process.env.CHAINSTATE || process.env.HOME + '/bitmark-bench/chainstate';
+const tmp = await mkdtemp(join(tmpdir(), 'btm-ldb-'));
+await cp(DIR, tmp, { recursive: true });
+const db = new ClassicLevel(tmp, { keyEncoding: 'buffer', valueEncoding: 'buffer', createIfMissing: false });
 await db.open();
 let n = 0; const prefixCount = {}; let obf = null;
 for await (const [k, v] of db.iterator()) {
@@ -14,3 +23,4 @@ console.log('\nobfuscate entry:', JSON.stringify(obf));
 console.log('prefix counts (first 200k):', JSON.stringify(prefixCount));
 console.log('  0x43=C(per-utxo)  0x63=c(per-tx)  0x42=B(bestblock)  0x0e/0x00=meta');
 await db.close();
+await rm(tmp, { recursive: true, force: true });

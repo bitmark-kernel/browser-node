@@ -5,6 +5,21 @@
 // otherwise writes OUT. Run: node --max-old-space-size=8192 chainstate-to-keystone.mjs
 import { ClassicLevel } from 'classic-level';
 import { createWriteStream } from 'node:fs';
+import { cp, rm, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Open a node LevelDB WITHOUT touching it: classic-level has no real read-only mode —
+// opening the live dir takes the lock and can rewrite/compact sstables, which can
+// corrupt a node database. So copy the dir to a throwaway temp and open the COPY.
+// (Stop bitmarkd before running anyway, so the copy is a consistent snapshot.)
+async function openReadOnly(dir) {
+  const tmp = await mkdtemp(join(tmpdir(), 'btm-ldb-'));
+  await cp(dir, tmp, { recursive: true });
+  const db = new ClassicLevel(tmp, { keyEncoding: 'buffer', valueEncoding: 'buffer', createIfMissing: false });
+  await db.open();
+  return { db, cleanup: async () => { try { await db.close(); } catch {} await rm(tmp, { recursive: true, force: true }); } };
+}
 
 const DIR = process.env.CHAINSTATE || process.env.HOME + '/bitmark-bench/chainstate';
 const OUT = process.env.OUT || process.env.HOME + '/bitmark-bench/keystone-tip.json';
@@ -46,8 +61,7 @@ function decodeCoins(buf) {
   return { coinbase, height, outs };
 }
 
-const db = new ClassicLevel(DIR, { keyEncoding: 'buffer', valueEncoding: 'buffer' });
-await db.open();
+const { db, cleanup } = await openReadOnly(DIR);   // read a COPY — never the live DB
 let txs = 0, coins = 0, total = 0, kinds = {};
 const out = VERIFY ? null : createWriteStream(OUT);
 if (out) out.write(JSON.stringify({ network: 'btm:mainnet', height: HEIGHT, hash: BESTHASH, coins: 794548 }) + '\n');
@@ -66,7 +80,7 @@ for await (const [k, val] of db.iterator()) {
   if (txs % 100000 === 0) console.log(`  ${txs} txs · ${coins} coins · ${Math.round(txs / ((Date.now() - t0) / 1000))} tx/s`);
 }
 if (out) await new Promise((r) => out.end(r));
-await db.close();
+await cleanup();   // close + delete the temp copy
 console.log(`\ntxs ${txs} · coins ${coins} · total ${(total / 1e8).toFixed(8)} BTM · kinds ${JSON.stringify(kinds)}`);
 console.log('expected: coins 794548 · total 21093089.79041634 BTM');
 const ok = coins === 794548 && Math.abs(total / 1e8 - 21093089.79041634) < 0.001;
