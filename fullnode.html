@@ -62,12 +62,10 @@ a working full node in a tab. <b>From genesis</b> replays + fully validates from
 <code>test-blocks*.mjs</code> (block validation at scale, every signature), <code>test-keystone.mjs</code> (validate forward from a keystone).</p>
 
 <script type="module">
-import { Codec } from './engine/codec/codec.js';
-import { P2pEngine } from './engine/codec/p2p.js';
-import { BlockEngine } from './engine/codec/blocks.js';
-import { ScriptEngine } from './engine/codec/script.js';
-import { ScriptInterpreter } from './engine/codec/interpreter.js';
-import { RtcPeer } from './peer-rtc.js';
+// The follow loop lives in node-follow.js (shared with the wallet, node-tested in
+// test-node-follow.mjs). This page is the UI around it: connect, catch up to the
+// tip, follow, and read balance from the node's own validated UTXO set.
+import { buildEngines, parseKeystone, connectPeer, downloadBatch, validateBlock, catchUp, followTip, persistUtxo, loadViaWebTorrent } from './node-follow.js';
 import { mnemonicToSeed, deriveSigningKey } from './wasm-keygen.js';
 import { hash160, bytesToHex } from './engine/codec/hash.js';
 
@@ -76,219 +74,113 @@ const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
 const keystoneUrl = q.get('keystone') || './data/snapshot-50000.json';
-const MSG_BLOCK = 2;
-let running = false, liveUtxo = null;
+const state = { running: false };   // shared stop-flag for catchUp/followTip
+let liveUtxo = null;
 
 function log(m, c) { const d = $('log'); d.innerHTML += `<div class="${c||'dim'}">${m}</div>`; d.scrollTop = d.scrollHeight; }
-const median = (a) => { const s = [...a].sort((x,y)=>x-y); return s[s.length>>1]; };
 
-// Fetch the keystone snapshot over WebTorrent. The magnet's infohash content-
-// addresses the data, so WebTorrent verifies every piece against it — the snapshot
-// can't be tampered with in transit. Big snapshots live in the swarm, not gh-pages.
-async function loadViaWebTorrent(magnet) {
-  let WebTorrent;
-  // official prebuilt browser ESM bundle (self-contained), with esm.sh as fallback
-  try { ({ default: WebTorrent } = await import('https://cdn.jsdelivr.net/npm/webtorrent@2.8.5/dist/webtorrent.min.js')); }
-  catch (e1) {
-    try { ({ default: WebTorrent } = await import('https://esm.sh/webtorrent@2.8.5')); }
-    catch (e2) { throw new Error('WebTorrent failed to load: ' + e1.message); }
-  }
-  return new Promise((resolve, reject) => {
-    const client = new WebTorrent();
-    client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
-    // stall timeout: only fails if NO data flows for a while (not a hard cap) — a
-    // slow-but-progressing 189 MB download keeps going.
-    let stall;
-    const arm = (ms, msg) => { clearTimeout(stall); stall = setTimeout(() => { try { client.destroy(); } catch {} reject(new Error(msg)); }, ms); };
-    arm(70000, 'no data in 70s — no seeder reachable? (try seeding from a desktop, or use the bundled keystone)');
-    client.add(magnet, (torrent) => {
-      log(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB)`, 'ok');
-      torrent.on('download', () => {
-        arm(70000, 'download stalled (no data for 70s)');
-        $('status').innerHTML = `<span class="dim">keystone ${(100 * torrent.progress).toFixed(1)}% · ${(torrent.downloaded / 1e6).toFixed(0)}/${(torrent.length / 1e6).toFixed(0)} MB · ${(torrent.downloadSpeed / 1e6).toFixed(2)} MB/s · ${torrent.numPeers} peer(s)</span>`;
-      });
-      torrent.on('wire', () => { $('prog').style.width = '2%'; });
-      const file = torrent.files[0];
-      const done = (buf) => { clearTimeout(stall); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
-      if (file.arrayBuffer) file.arrayBuffer().then((b) => done(new Uint8Array(b))).catch(reject);
-      else file.getBuffer((err, b) => err ? reject(err) : done(b));
-    });
-  });
-}
-
-async function buildEngines() {
-  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
-  const [core, proof, p2pS, chain, validate, script] = await Promise.all(['core','proof','p2p','chain','validate','script'].map(jl));
-  const codec = new Codec(core, proof, p2pS);
-  return {
-    codec,
-    p2p: P2pEngine.fromSchemas(codec, p2pS, chain, 'btm:mainnet'),
-    be: BlockEngine.fromSchemas(codec, chain, validate, script, 'btm:mainnet'),
-    interp: new ScriptInterpreter(codec, ScriptEngine.fromSchemas(script, chain, 'btm:mainnet')),
-  };
-}
-
-// fetch block hashes forward from a locator (genesis or a keystone tip), up to `limit` more
-async function fetchHashes(peer, codec, locator, limit, includeLocator) {
-  const hashes = includeLocator ? [locator] : [];
-  let cur = locator;
-  while (hashes.length < limit + (includeLocator ? 1 : 0)) {
-    peer.send('getheaders', { version: 70016, blockLocator: [cur], hashStop: '0'.repeat(64) });
-    const hm = await peer.waitFor(['headers']);
-    const hs = (hm.payload?.entries ?? []).map((e) => codec.blockHash(e.header));
-    if (!hs.length) break;
-    for (const h of hs) hashes.push(h);
-    cur = hs[hs.length - 1];
-    $('status').innerHTML = `<span class="dim">fetched ${hashes.length} headers…</span>`;
-  }
-  return hashes;
-}
-
-// download blocks for a batch of hashes over P2P
-async function downloadBatch(eng, peer, batch) {
-  const got = new Map();
-  peer.send('getdata', { items: batch.map((hh) => ({ type: MSG_BLOCK, hash: hh })) });
-  await peer.collect('block', batch.length, { onItem: (m) => got.set(eng.codec.blockHash(m.payload.header), m.payload), timeoutMs: 60000 });
-  return batch.map((hh) => { const b = got.get(hh); if (!b) throw new Error('missing block ' + hh.slice(0, 12)); return b; });
-}
-
-// validate one block at `height` against `utxo` (structure + context + every signature),
-// then applyBlock. Tolerant of the one historical checkpointed bad-signature block.
 const S = { sigs: 0, sigFails: 0 };
-function validateOne(eng, block, height, utxo, times) {
-  const { be, interp } = eng;
-  be.validateBlockStructure(block);
-  be.validateBlockContext(block, { height, utxo, mtp: times.length >= 11 ? median(times.slice(-11)) : null });
-  for (let t = 1; t < block.transactions.length; t++) {
-    const tx = block.transactions[t];
-    const prevs = tx.inputs.map((inp) => utxo.get(`${inp.prevout.txid}:${inp.prevout.vout}`)?.output);
-    tx.inputs.forEach((inp, k) => { if (prevs[k]) { S.sigs++; if (interp.verifyInput(tx, k, prevs[k], prevs).ok !== true) { S.sigFails++; log(`note: signature anomaly at height ${height} (known checkpointed block)`, 'dim'); } } });
-  }
-  be.applyBlock(utxo, block, height);
-  times.push(block.header.time); if (times.length > 20) times.shift();
-}
+const onAnomaly = (height) => { S.sigFails++; log(`note: signature anomaly at height ${height} (known checkpointed block)`, 'dim'); };
 
-// Persist the validated UTXO set to OPFS (one NDJSON file: meta line + coin lines,
-// same format as a keystone) so wallet.html can read balance from our OWN node.
-// Additive + non-fatal: any failure just logs, the node keeps following. Writes in
-// ~1 MB chunks (awaits between them) so the UI stays responsive.
+// load schema objects for buildEngines (node-follow builds the engines from these)
+async function loadSchemas() { const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json()); const s = {}; for (const n of ['core','proof','p2p','chain','validate','script']) s[n] = await jl(n); return s; }
+
+// throttled OPFS persist (≤ every 3 min) with logging, wrapping node-follow.persistUtxo
 let lastPersistMs = 0;
-const PERSIST_THROTTLE_MS = 180000;   // while following, re-write at most every 3 min
-async function persistUtxo(utxo, height, force = false) {
-  if (!force && Date.now() - lastPersistMs < PERSIST_THROTTLE_MS) return;   // skip; the set is still recent enough for the wallet
-  try {
-    if (!navigator.storage?.getDirectory) { log('OPFS unavailable — skipping UTXO persist', 'dim'); return; }
-    const root = await navigator.storage.getDirectory();
-    const fh = await root.getFileHandle('btm-utxo.json', { create: true });
-    const w = await fh.createWritable();
-    await w.write(JSON.stringify({ network: 'btm:mainnet', height, coins: utxo.size }) + '\n');
-    let buf = '';
-    for (const [k, c] of utxo) {
-      buf += JSON.stringify([k, `${c.output.value}\t${c.output.scriptPubKey}\t${c.height || 0}\t${c.coinbase ? 1 : 0}`]) + '\n';
-      if (buf.length > (1 << 20)) { await w.write(buf); buf = ''; }
-    }
-    if (buf) await w.write(buf);
-    await w.close();
-    lastPersistMs = Date.now();
-    log(`persisted ${utxo.size.toLocaleString()} coins to OPFS — wallet.html can now read balance from this node`, 'ok');
-  } catch (e) { log('UTXO persist failed (non-fatal): ' + e.message, 'warn'); }
+async function persist(utxo, height, hash, force = false) {
+  if (!force && Date.now() - lastPersistMs < 180000) return;
+  try { if (await persistUtxo(utxo, height, { hash })) { lastPersistMs = Date.now(); log(`persisted ${utxo.size.toLocaleString()} coins to OPFS — wallets can read balance from this node`, 'ok'); } else log('OPFS unavailable — skipping UTXO persist', 'dim'); }
+  catch (e) { log('UTXO persist failed (non-fatal): ' + e.message, 'warn'); }
 }
 
-let following = false;
 async function run(mode) {
-  if (running) return; running = true; following = false; S.sigs = 0; S.sigFails = 0;
+  if (state.running) return; state.running = true; S.sigs = 0; S.sigFails = 0; let following = false;
   $('start').disabled = $('startK').disabled = true; $('status').textContent = 'loading engine…';
   let peer;
   try {
-    const eng = await buildEngines();
+    const eng = buildEngines(await loadSchemas());
     const vectors = await fetch('./data/bitmark.json').then(r => r.json());
-    const utxo = new Map(); const times = []; liveUtxo = utxo;   // expose to the wallet panel (same ref, mutated as we follow)
-    let height, locator;   // height = next height to validate; locator = last-validated block hash
+    const utxo = new Map(); const times = []; liveUtxo = utxo;   // exposed to the wallet panel (same ref, mutated as we follow)
+    const ref = { height: 0, locator: null };   // height = next to validate; locator = last-validated hash
 
     if (mode === 'keystone') {
       const magnet = ($('magnet').value.trim() || q.get('magnet') || '').trim();
       $('status').textContent = magnet ? 'fetching keystone over WebTorrent…' : 'loading bundled keystone…';
-      const text = magnet ? await loadViaWebTorrent(magnet) : await fetch(keystoneUrl).then(r => { if (!r.ok) throw new Error('no bundled keystone yet — paste a magnet'); return r.text(); });
-      const lines = text.split('\n').filter(Boolean); const meta = JSON.parse(lines[0]);
-      for (let i = 1; i < lines.length; i++) { const [k, val] = JSON.parse(lines[i]); const [s, spk, ht, cb] = val.split('\t'); utxo.set(k, { output: { value: Number(s), scriptPubKey: spk }, height: Number(ht), coinbase: cb === '1' }); }
-      height = meta.height + 1; locator = meta.hash;
+      const text = magnet ? await loadViaWebTorrent(magnet, (m) => { $('status').innerHTML = `<span class="dim">${m}</span>`; }) : await fetch(keystoneUrl).then(r => { if (!r.ok) throw new Error('no bundled keystone yet — paste a magnet'); return r.text(); });
+      const { utxo: ks, meta } = parseKeystone(text);
+      for (const [k, c] of ks) utxo.set(k, c);
+      ref.height = meta.height + 1; ref.locator = meta.hash;
       $('utxo').textContent = utxo.size.toLocaleString(); $('height').textContent = meta.height.toLocaleString();
-      log(`loaded validated keystone: ${utxo.size} coins at height ${meta.height} (${meta.hash.slice(0, 16)}…)`, 'ok');
-    } else { height = 0; locator = null; }
-
-    $('status').textContent = 'connecting to a Bitmark peer…';
-    peer = new RtcPeer(eng.p2p, eng.codec);
-    await peer.connect(signalUrl, { room: p2pRoom });
-    const tipH = peer.peerVersion?.startHeight || 0;
-    log(`handshake complete · peer tip ${tipH.toLocaleString()}`, 'ok');
-
-    const COUNT = Math.max(1, Math.min(200000, parseInt($('count').value, 10) || 2000));
-    const t0 = performance.now();
-    // genesis mode: validate the genesis block first to seed the UTXO set
-    if (mode === 'genesis') { const [gb] = await downloadBatch(eng, peer, [vectors.genesisHash]); validateOne(eng, gb, 0, utxo, times); height = 1; locator = vectors.genesisHash; }
-
-    // catch-up: fetch headers forward, download + validate, until at tip (or COUNT for the genesis demo)
-    let validated = 0, atTip = false;
-    $('status').innerHTML = '<span class="ok">validating…</span>';
-    while (running) {
-      peer.send('getheaders', { version: 70016, blockLocator: [locator], hashStop: '0'.repeat(64) });
-      const hm = await peer.waitFor(['headers'], 30000);
-      let hs = (hm.payload?.entries ?? []).map((e) => eng.codec.blockHash(e.header));
-      if (!hs.length) { atTip = true; break; }
-      if (mode === 'genesis') { const room = COUNT - validated; if (room <= 0) break; if (hs.length > room) hs = hs.slice(0, room); }
-      for (let i = 0; i < hs.length && running; i += 30) {
-        const batch = hs.slice(i, i + 30);
-        const blocks = await downloadBatch(eng, peer, batch);
-        for (const block of blocks) { validateOne(eng, block, height, utxo, times); height++; validated++; }
-        locator = batch[batch.length - 1];
-        const dt = (performance.now() - t0) / 1000;
-        $('height').textContent = (height - 1).toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString();
-        $('sigs').textContent = S.sigs.toLocaleString(); $('rate').textContent = Math.round(validated / dt);
-        if (tipH) $('prog').style.width = Math.min(100, 100 * (height - 1) / tipH).toFixed(2) + '%';
-        await new Promise((r) => setTimeout(r, 0));
-      }
-      if (mode === 'genesis' && validated >= COUNT) break;
+      log(`loaded validated keystone: ${utxo.size} coins at height ${meta.height} (${(meta.hash || '').slice(0, 16)}…)`, 'ok');
     }
 
-    log(`caught up: height ${height - 1} · UTXO ${utxo.size} · ${S.sigs} signatures (${S.sigFails} known anomalies)`, 'ok');
-    if (mode === 'keystone' && atTip) {
-      $('prog').style.width = '100%';
-      await persistUtxo(utxo, height - 1, true);   // force the initial write of the validated UTXO set to OPFS
-      $('status').innerHTML = `<span class="ok">✓ at the tip (${(height - 1).toLocaleString()}) — following…</span>`;
-      following = true; lastHash = locator; await followTip(eng, peer, utxo, times, () => height, (h) => { height = h; });
+    $('status').textContent = 'connecting to a Bitmark peer…';
+    peer = await connectPeer(eng, { signalUrl, room: p2pRoom });
+    const tipH = peer.peerVersion?.startHeight || 0;
+    log(`handshake complete · peer tip ${tipH.toLocaleString()}`, 'ok');
+    const t0 = performance.now();
+
+    if (mode === 'genesis') {
+      // bounded replay demo from block 0, using the shared validateBlock/downloadBatch
+      const COUNT = Math.max(1, Math.min(200000, parseInt($('count').value, 10) || 2000));
+      const [gb] = await downloadBatch(eng, peer, [vectors.genesisHash]);
+      S.sigs += validateBlock(eng, gb, 0, utxo, times, onAnomaly).sigs;
+      ref.height = 1; ref.locator = vectors.genesisHash;
+      let validated = 0;
+      $('status').innerHTML = '<span class="ok">validating…</span>';
+      while (state.running && validated < COUNT) {
+        peer.send('getheaders', { version: 70016, blockLocator: [ref.locator], hashStop: '0'.repeat(64) });
+        const hm = await peer.waitFor(['headers'], 30000);
+        let hs = (hm.payload?.entries ?? []).map((e) => eng.codec.blockHash(e.header));
+        if (!hs.length) break;
+        const room = COUNT - validated; if (hs.length > room) hs = hs.slice(0, room);
+        for (let i = 0; i < hs.length && state.running; i += 30) {
+          const batch = hs.slice(i, i + 30);
+          const blocks = await downloadBatch(eng, peer, batch);
+          for (const block of blocks) { S.sigs += validateBlock(eng, block, ref.height, utxo, times, onAnomaly).sigs; ref.height++; validated++; }
+          ref.locator = batch[batch.length - 1];
+          const dt = (performance.now() - t0) / 1000;
+          $('height').textContent = (ref.height - 1).toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString();
+          $('sigs').textContent = S.sigs.toLocaleString(); $('rate').textContent = Math.round(validated / dt);
+          if (tipH) $('prog').style.width = Math.min(100, 100 * (ref.height - 1) / tipH).toFixed(2) + '%';
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      log(`validated ${validated} blocks · height ${ref.height - 1} · UTXO ${utxo.size} · ${S.sigs} signatures (${S.sigFails} known anomalies)`, 'ok');
+      $('status').innerHTML = `<span class="ok">✓ validated to height ${(ref.height - 1).toLocaleString()} — UTXO ${utxo.size.toLocaleString()}, ${S.sigs.toLocaleString()} signatures${S.sigFails ? `, ${S.sigFails} known anomaly` : ''}</span>`;
     } else {
-      $('status').innerHTML = `<span class="ok">✓ validated to height ${(height - 1).toLocaleString()} — UTXO ${utxo.size.toLocaleString()}, ${S.sigs.toLocaleString()} signatures${S.sigFails ? `, ${S.sigFails} known anomaly` : ''}</span>`;
+      // keystone: catch up to the tip with the shared follow loop, then follow it
+      $('status').innerHTML = '<span class="ok">validating…</span>';
+      const catchStart = ref.height - 1;
+      const cu = await catchUp(eng, peer, { utxo, times, ref, state, onProgress: ({ height: h, coins, sigs }) => {
+        S.sigs = sigs; const dt = (performance.now() - t0) / 1000;
+        $('height').textContent = h.toLocaleString(); $('utxo').textContent = coins.toLocaleString();
+        $('sigs').textContent = sigs.toLocaleString(); $('rate').textContent = dt > 0 ? Math.round((h - catchStart) / dt) : '—';
+        if (tipH) $('prog').style.width = Math.min(100, 100 * h / tipH).toFixed(2) + '%';
+      } });
+      S.sigFails = cu.sigFails;
+      log(`caught up: height ${ref.height - 1} · UTXO ${utxo.size} · ${S.sigs} signatures (${S.sigFails} known anomalies)`, 'ok');
+      if (cu.atTip) {
+        $('prog').style.width = '100%';
+        await persist(utxo, ref.height - 1, ref.locator, true);   // force the initial OPFS write of the validated set
+        $('status').innerHTML = `<span class="ok">✓ at the tip (${(ref.height - 1).toLocaleString()}) — following…</span>`;
+        following = true;
+        await followTip(eng, peer, { utxo, times, ref, state,
+          onBlocks: async ({ height: h, coins, added }) => {
+            $('height').textContent = h.toLocaleString(); $('utxo').textContent = coins.toLocaleString(); $('sigs').textContent = S.sigs.toLocaleString();
+            log(`+${added} new block(s) → height ${h}`, 'ok');
+            await persist(utxo, h, ref.locator);
+            $('status').innerHTML = `<span class="ok">✓ following tip (${h.toLocaleString()})</span>`;
+          },
+          onError: (e) => log('follow: ' + e.message, 'warn') });
+      } else {
+        $('status').innerHTML = `<span class="ok">✓ validated to height ${(ref.height - 1).toLocaleString()} — UTXO ${utxo.size.toLocaleString()}, ${S.sigs.toLocaleString()} signatures${S.sigFails ? `, ${S.sigFails} known anomaly` : ''}</span>`;
+      }
     }
   } catch (e) {
     $('status').innerHTML = `<span class="err">${e.message}</span>`; log('error: ' + e.message, 'err');
-  } finally { if (!following) { try { peer?.close(); } catch {} running = false; $('start').disabled = $('startK').disabled = false; } }
+  } finally { if (!following) { try { peer?.close(); } catch {} state.running = false; $('start').disabled = $('startK').disabled = false; } }
 }
-
-// follow the tip: poll for new blocks, validate + apply, stay current. Runs until stopped.
-async function followTip(eng, peer, utxo, times, getH, setH) {
-  const poll = async () => {
-    if (!running) return;
-    try {
-      // ask from our current tip; we track locator by last applied block hash
-      peer.send('getheaders', { version: 70016, blockLocator: [lastHash], hashStop: '0'.repeat(64) });
-      const hm = await peer.waitFor(['headers'], 30000);
-      const hs = (hm.payload?.entries ?? []).map((e) => eng.codec.blockHash(e.header));
-      if (hs.length) {
-        const blocks = await downloadBatch(eng, peer, hs);
-        let h = getH();
-        for (const block of blocks) { validateOne(eng, block, h, utxo, times); h++; }
-        setH(h); lastHash = hs[hs.length - 1];
-        $('height').textContent = (h - 1).toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString(); $('sigs').textContent = S.sigs.toLocaleString();
-        log(`+${hs.length} new block(s) → height ${h - 1}`, 'ok');
-        await persistUtxo(utxo, h - 1);   // keep the OPFS UTXO set current as we follow
-        $('status').innerHTML = `<span class="ok">✓ following tip (${(h - 1).toLocaleString()})</span>`;
-      }
-    } catch (e) { log('follow: ' + e.message, 'warn'); }
-    if (running) setTimeout(poll, 15000);
-  };
-  await poll();
-}
-let lastHash = null;
 
 // Wallet balance read straight from THIS node's validated UTXO set — derive the
 // wallet's addresses locally, match them against the in-memory UTXO map. No Electrum.
