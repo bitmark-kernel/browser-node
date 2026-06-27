@@ -33,7 +33,7 @@ Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href
 <button id="startK">▶ From assumeUTXO keystone</button>
 <span id="status" class="dim">idle</span></p>
 <p class="dim" style="margin:0 0 4px">keystone source — a <b>WebTorrent magnet</b> (big snapshots, swarmed P2P) or blank for the small bundled one:</p>
-<input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:… (optional)" style="width:100%; box-sizing:border-box">
+<input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:… (optional)" style="width:100%; box-sizing:border-box" value="magnet:?xt=urn:btih:9c5df0ec126729f45ff9b3d25afaa5c4d6992942&amp;dn=btm-keystone-2403652.json&amp;tr=wss%3A%2F%2Ftracker.openwebtorrent.com&amp;tr=wss%3A%2F%2Ftracker.webtorrent.dev&amp;tr=wss%3A%2F%2Ftracker.btorrent.xyz">
 <script src="https://cdn.jsdelivr.net/npm/webtorrent@2/webtorrent.min.js"></script>
 
 <div class="stats">
@@ -47,9 +47,10 @@ Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href
 
 <p class="dim" style="margin-top:14px; border-top:1px solid var(--bd); padding-top:10px">
 Same engine that validates Bitcoin — <code>BlockEngine</code> (structure + context) + <code>ScriptInterpreter.verifyInput</code>
-(ECDSA, pure-JS secp) + a UTXO map, with <code>btm:mainnet</code> params. Proven in <code>test-blocks.mjs</code> (801 blocks,
-every signature). <b>Bounded demo</b> (full replay of ~2.4M blocks needs an assumeUTXO keystone — next); this validates from
-genesis to show the kernel doing real work in the tab.</p>
+(ECDSA, pure-JS secp) + a UTXO map, with <code>btm:mainnet</code> params. <b>From keystone</b> loads a real
+<b>assumeUTXO snapshot at the tip</b> (~795k coins, height 2,403,652, ~181&nbsp;MB) over WebTorrent, then follows the live tip —
+a working full node in a tab. <b>From genesis</b> replays + fully validates from block 0 (bounded demo). Proven:
+<code>test-blocks*.mjs</code> (block validation at scale, every signature), <code>test-keystone.mjs</code> (validate forward from a keystone).</p>
 
 <script type="module">
 import { Codec } from './engine/codec/codec.js';
