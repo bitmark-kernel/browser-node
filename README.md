@@ -38,6 +38,22 @@ UTXO set is tiny (chainstate ~97 MB).
 - **wallet.html** — balance (ElectrumX) → coin-select → legacy sign → broadcast.
 - **explorer.html** — look up any address (balance/UTXOs/history) via ElectrumX.
 - **node.html** — sync + validate the header chain from a peer (linkage + structure).
+- **fullnode.html** — download blocks and **fully validate** them in-tab (structure + context + every
+  signature) building a UTXO set, from genesis or from an **assumeUTXO keystone**.
+
+## The full node (the goal — Electrum is just bootstrap)
+
+The destination is a real full node in the tab: no trusted index. The kernel validates blocks
+(CheckBlock structure, contextual rules, **every ECDSA signature** via `ScriptInterpreter`) and builds
+its own UTXO set; the wallet's balance ultimately comes from *that*.
+
+- Proven at scale: **20,000+ real Bitmark blocks** replayed from local `blk*.dat` with the kernel —
+  structure + context + tens of thousands of signatures, 0 unexpected failures (`test-blocks-local.mjs`).
+- **assumeUTXO keystone** (`gen-snapshot.mjs`): validate genesis→H once, emit the UTXO set as a snapshot
+  the browser loads to skip re-replaying ~2.4M blocks, then validates forward.
+- **Known anomaly:** one historical block carries a bad signature (a Bitmark bug); the network
+  checkpointed past it. The validators treat that single signature as a known, counted anomaly — not fatal.
+- **Multi-algo PoW:** the block-identity hash is SHA256d (validated); PoW *difficulty* is delegated.
 
 ## Proofs (node, no browser)
 
@@ -46,6 +62,7 @@ UTXO set is tiny (chainstate ~97 MB).
 - `test-sign.mjs` / `test-sign-multi.mjs` — legacy sighash signing (single + multi-input) verifies under the engine.
 - `test-electrum.mjs` — ElectrumX protocol (version, tip, scripthash balance/listunspent).
 - `test-headers.mjs` — 2,000 real Bitmark headers validated by the kernel (difficulty delegated).
+- `test-blocks.mjs` / `test-blocks-local.mjs` — full block validation (P2P / local blk files) at scale.
 
 ## Infrastructure
 

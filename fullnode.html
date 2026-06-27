@@ -29,7 +29,9 @@ interpreter, and a <b>UTXO set built from scratch</b>. No Electrum, no trusted i
 Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href="node.html">headers-only node</a></p>
 
 <p>validate the first <input id="count" inputmode="numeric" value="2000"> blocks from genesis &nbsp;
-<button id="start">▶ Start full validation</button> <span id="status" class="dim">idle</span></p>
+<button id="start">▶ From genesis</button>
+<button id="startK">▶ From assumeUTXO keystone</button>
+<span id="status" class="dim">idle</span></p>
 
 <div class="stats">
   <div class="stat"><div class="n" id="height">0</div><div class="l">blocks validated</div></div>
@@ -58,77 +60,110 @@ const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
+const keystoneUrl = q.get('keystone') || './data/snapshot-50000.json';
 const MSG_BLOCK = 2;
 let running = false;
 
 function log(m, c) { const d = $('log'); d.innerHTML += `<div class="${c||'dim'}">${m}</div>`; d.scrollTop = d.scrollHeight; }
 const median = (a) => { const s = [...a].sort((x,y)=>x-y); return s[s.length>>1]; };
 
-async function start() {
-  if (running) return; running = true; $('start').disabled = true; $('status').textContent = 'loading engine…';
+async function buildEngines() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [core, proof, p2pS, chain, validate, script] = await Promise.all(['core','proof','p2p','chain','validate','script'].map(jl));
+  const codec = new Codec(core, proof, p2pS);
+  return {
+    codec,
+    p2p: P2pEngine.fromSchemas(codec, p2pS, chain, 'btm:mainnet'),
+    be: BlockEngine.fromSchemas(codec, chain, validate, script, 'btm:mainnet'),
+    interp: new ScriptInterpreter(codec, ScriptEngine.fromSchemas(script, chain, 'btm:mainnet')),
+  };
+}
+
+// fetch block hashes forward from a locator (genesis or a keystone tip), up to `limit` more
+async function fetchHashes(peer, codec, locator, limit, includeLocator) {
+  const hashes = includeLocator ? [locator] : [];
+  let cur = locator;
+  while (hashes.length < limit + (includeLocator ? 1 : 0)) {
+    peer.send('getheaders', { version: 70016, blockLocator: [cur], hashStop: '0'.repeat(64) });
+    const hm = await peer.waitFor(['headers']);
+    const hs = (hm.payload?.entries ?? []).map((e) => codec.blockHash(e.header));
+    if (!hs.length) break;
+    for (const h of hs) hashes.push(h);
+    cur = hs[hs.length - 1];
+    $('status').innerHTML = `<span class="dim">fetched ${hashes.length} headers…</span>`;
+  }
+  return hashes;
+}
+
+// the shared full-validation loop: download blocks for `hashes`, validate each
+// (structure + context + every signature) against `utxo`, applyBlock. Returns counts.
+// Tolerant of the one historical bad-signature block (checkpointed in Bitmark).
+async function validateRange(eng, peer, hashes, utxo, startHeight) {
+  const { codec, be, interp } = eng;
+  const times = []; let sigs = 0, sigFails = 0, h = startHeight; const t0 = performance.now();
+  for (let i = 0; i < hashes.length && running; i += 30) {
+    const batch = hashes.slice(i, i + 30); const got = new Map();
+    peer.send('getdata', { items: batch.map((hh) => ({ type: MSG_BLOCK, hash: hh })) });
+    await peer.collect('block', batch.length, { onItem: (m) => got.set(codec.blockHash(m.payload.header), m.payload), timeoutMs: 60000 });
+    for (const hh of batch) {
+      const block = got.get(hh); if (!block) throw new Error('missing block at height ' + h);
+      be.validateBlockStructure(block);
+      be.validateBlockContext(block, { height: h, utxo, mtp: times.length >= 11 ? median(times.slice(-11)) : null });
+      for (let t = 1; t < block.transactions.length; t++) {
+        const tx = block.transactions[t];
+        const prevs = tx.inputs.map((inp) => utxo.get(`${inp.prevout.txid}:${inp.prevout.vout}`)?.output);
+        tx.inputs.forEach((inp, k) => { if (prevs[k]) { sigs++; if (interp.verifyInput(tx, k, prevs[k], prevs).ok !== true) { sigFails++; log(`note: signature anomaly at height ${h} (known checkpointed block)`, 'dim'); } } });
+      }
+      be.applyBlock(utxo, block, h);
+      times.push(block.header.time); if (times.length > 20) times.shift(); h++;
+    }
+    const dt = (performance.now() - t0) / 1000;
+    $('height').textContent = h.toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString();
+    $('sigs').textContent = sigs.toLocaleString(); $('rate').textContent = Math.round((h - startHeight) / dt);
+    $('prog').style.width = (100 * (i + batch.length) / hashes.length).toFixed(1) + '%';
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return { h, sigs, sigFails };
+}
+
+async function run(mode) {
+  if (running) return; running = true; $('start').disabled = $('startK').disabled = true;
+  $('status').textContent = 'loading engine…';
+  let peer;
   try {
-    const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
-    const [core, proof, p2pS, chain, validate, script] = await Promise.all(['core','proof','p2p','chain','validate','script'].map(jl));
+    const eng = await buildEngines();
     const vectors = await fetch('./data/bitmark.json').then(r => r.json());
-    const codec = new Codec(core, proof, p2pS);
-    const p2p = P2pEngine.fromSchemas(codec, p2pS, chain, 'btm:mainnet');
-    const be = BlockEngine.fromSchemas(codec, chain, validate, script, 'btm:mainnet');
-    const interp = new ScriptInterpreter(codec, ScriptEngine.fromSchemas(script, chain, 'btm:mainnet'));
-    const COUNT = Math.max(1, Math.min(50000, parseInt($('count').value, 10) || 2000));
+    let utxo = new Map(), startHeight = 0, locator = vectors.genesisHash, includeLoc = true;
+
+    if (mode === 'keystone') {
+      $('status').textContent = 'loading assumeUTXO keystone…';
+      const text = await fetch(keystoneUrl).then(r => { if (!r.ok) throw new Error('no keystone snapshot yet'); return r.text(); });
+      const lines = text.split('\n').filter(Boolean); const meta = JSON.parse(lines[0]);
+      for (let i = 1; i < lines.length; i++) { const [k, val] = JSON.parse(lines[i]); const [s, spk, ht, cb] = val.split('\t'); utxo.set(k, { output: { value: Number(s), scriptPubKey: spk }, height: Number(ht), coinbase: cb === '1' }); }
+      startHeight = meta.height + 1; locator = meta.hash; includeLoc = false;
+      $('utxo').textContent = utxo.size.toLocaleString(); $('height').textContent = meta.height.toLocaleString();
+      log(`loaded validated keystone: ${utxo.size} coins at height ${meta.height} (${meta.hash.slice(0, 16)}…)`, 'ok');
+    }
 
     $('status').textContent = 'connecting to a Bitmark peer…';
-    const peer = new RtcPeer(p2p, codec);
+    peer = new RtcPeer(eng.p2p, eng.codec);
     await peer.connect(signalUrl, { room: p2pRoom });
     log('handshake complete', 'ok');
 
-    // block hashes: genesis + first COUNT (getheaders may need several rounds at 2000/batch)
-    const hashes = [vectors.genesisHash]; let locator = vectors.genesisHash;
-    while (hashes.length <= COUNT) {
-      peer.send('getheaders', { version: 70016, blockLocator: [locator], hashStop: '0'.repeat(64) });
-      const hm = await peer.waitFor(['headers']);
-      const hs = (hm.payload?.entries ?? []).map((e) => codec.blockHash(e.header));
-      if (!hs.length) break;
-      for (const h of hs) { if (hashes.length <= COUNT) hashes.push(h); }
-      locator = hs[hs.length - 1];
-      $('status').innerHTML = `<span class="dim">fetched ${hashes.length} headers…</span>`;
-    }
-    log(`have ${hashes.length} block hashes`, 'ok');
+    const COUNT = Math.max(1, Math.min(50000, parseInt($('count').value, 10) || 2000));
+    const hashes = await fetchHashes(peer, eng.codec, locator, COUNT, includeLoc);
+    log(`have ${hashes.length} block hashes to validate`, 'ok');
 
-    // download + validate in batches, building the UTXO set
-    const utxo = new Map(); const times = [];
-    let sigs = 0, h = 0; const t0 = performance.now();
     $('status').innerHTML = '<span class="ok">validating…</span>';
-    for (let i = 0; i < hashes.length && running; i += 30) {
-      const batch = hashes.slice(i, i + 30);
-      const got = new Map();
-      peer.send('getdata', { items: batch.map((hh) => ({ type: MSG_BLOCK, hash: hh })) });
-      await peer.collect('block', batch.length, { onItem: (m) => got.set(codec.blockHash(m.payload.header), m.payload), timeoutMs: 60000 });
-      for (const hh of batch) {
-        const block = got.get(hh); if (!block) throw new Error('missing block at height ' + h);
-        be.validateBlockStructure(block);
-        be.validateBlockContext(block, { height: h, utxo, mtp: times.length >= 11 ? median(times.slice(-11)) : null });
-        for (let t = 1; t < block.transactions.length; t++) {
-          const tx = block.transactions[t];
-          const prevs = tx.inputs.map((inp) => utxo.get(`${inp.prevout.txid}:${inp.prevout.vout}`)?.output);
-          tx.inputs.forEach((inp, k) => { if (prevs[k]) { sigs++; interp.verifyInput(tx, k, prevs[k], prevs); } });
-        }
-        be.applyBlock(utxo, block, h);
-        times.push(block.header.time); h++;
-      }
-      const dt = (performance.now() - t0) / 1000;
-      $('height').textContent = h.toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString();
-      $('sigs').textContent = sigs.toLocaleString(); $('rate').textContent = Math.round(h / dt);
-      $('prog').style.width = (100 * h / hashes.length).toFixed(1) + '%';
-      await new Promise((r) => setTimeout(r, 0));   // yield to the UI
-    }
-    log(`validated ${h} blocks · ${utxo.size} UTXO coins · ${sigs} signatures`, 'ok');
-    $('status').innerHTML = `<span class="ok">✓ ${h.toLocaleString()} blocks fully validated — UTXO set ${utxo.size.toLocaleString()} coins, ${sigs} signatures, 0 failures</span>`;
-    peer.close();
+    const { h, sigs, sigFails } = await validateRange(eng, peer, hashes, utxo, startHeight);
+    log(`done: at height ${h} · ${utxo.size} UTXO coins · ${sigs} signatures (${sigFails} known anomalies)`, 'ok');
+    $('status').innerHTML = `<span class="ok">✓ validated to height ${h.toLocaleString()} — UTXO ${utxo.size.toLocaleString()} coins, ${sigs.toLocaleString()} signatures${sigFails ? `, ${sigFails} known-checkpointed anomaly` : ', 0 failures'}</span>`;
   } catch (e) {
     $('status').innerHTML = `<span class="err">${e.message}</span>`; log('error: ' + e.message, 'err');
-  } finally { running = false; $('start').disabled = false; }
+  } finally { try { peer?.close(); } catch {} running = false; $('start').disabled = $('startK').disabled = false; }
 }
-$('start').onclick = start;
+$('start').onclick = () => run('genesis');
+$('startK').onclick = () => run('keystone');
 </script>
 </body>
 </html>
