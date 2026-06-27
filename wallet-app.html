@@ -38,6 +38,15 @@
   .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
   code,.mono { font-family:var(--mono); }
   .v { word-break:break-all; border:1px solid var(--bd); border-radius:9px; padding:9px 11px; background:var(--pan); margin-top:5px; user-select:all; font-family:var(--mono); font-size:13px; }
+  .qrbox { text-align:center; }
+  .qrbox > div { display:inline-block; background:#fff; border:1px solid var(--bd); border-radius:12px; padding:10px; width:190px; }
+  .qrbox svg { width:100%; height:auto; display:block; }
+  .copybtn { padding:6px 12px; font-size:13px; }
+  .rxrow { display:flex; align-items:center; gap:10px; padding:9px 11px; border:1px solid var(--bd); border-radius:9px; margin-top:7px; cursor:pointer; background:var(--card); }
+  .rxrow:hover { border-color:var(--ac); } .rxrow.sel { border-color:var(--ac); background:var(--pan); }
+  .rxrow .p { color:var(--mut); font-size:12px; font-family:var(--mono); flex:0 0 30px; }
+  .rxrow .a { font-family:var(--mono); font-size:13px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rxrow .copyone { padding:4px 10px; font-size:13px; flex:0 0 auto; }
   table { border-collapse:collapse; width:100%; margin-top:10px; font-family:var(--mono); font-size:12.5px; }
   th,td { padding:7px 9px; text-align:left; border-bottom:1px solid var(--bd); } tr:last-child td { border-bottom:0; }
   th { color:var(--mut); font-size:11px; text-transform:uppercase; font-family:var(--sans); font-weight:700; } td.addr { word-break:break-all; }
@@ -74,8 +83,11 @@
   </div>
 
   <div class="card tabpanel" id="tab-receive">
-    <h2>Receive — your addresses</h2>
-    <p class="dim" style="margin-top:0; font-size:13px">Fund any of these (legacy P2PKH). The first is your main receiving address.</p>
+    <h2>Receive</h2>
+    <div class="qrbox"><div id="rxQr"></div></div>
+    <div class="v" id="rxAddr" style="text-align:center; margin-top:11px"></div>
+    <p style="text-align:center; margin:11px 0 2px"><button class="primary copybtn" id="rxCopy">⧉ Copy address</button> &nbsp;<span class="dim" id="rxPath" style="font-size:12px"></span></p>
+    <h3>Your addresses <span class="dim" style="font-weight:400; font-size:12px">· tap to show its QR</span></h3>
     <div id="receiveList"></div>
   </div>
 
@@ -129,6 +141,7 @@
   </div>
 </div>
 
+<script src="./qrcode.js"></script>
 <script type="module">
 import { Codec } from './engine/codec/codec.js';
 import { ScriptEngine, addressToScript } from './engine/codec/script.js';
@@ -186,6 +199,24 @@ let lastSource = null; // 'node' | 'electrum' — what Refresh repeats
 
 function setSync(state, text) { $('syncDot').className = 'dot' + (state ? ' ' + state : ''); $('syncTxt').textContent = text; }
 
+function copyText(text, btn) {
+  navigator.clipboard?.writeText(text).then(() => { const o = btn.dataset.label || btn.textContent; btn.dataset.label = o; btn.textContent = btn.id === 'rxCopy' ? '✓ Copied' : '✓'; setTimeout(() => { btn.textContent = o; }, 1100); }).catch(() => {});
+}
+function qrSvg(text) { if (typeof qrcode === 'undefined') return '<span class="dim" style="font-size:12px">QR unavailable</span>'; const qr = qrcode(0, 'M'); qr.addData(text); qr.make(); return qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true }); }
+let rxList = [];
+function showReceive(e) {
+  $('rxQr').innerHTML = qrSvg(e.address); $('rxAddr').textContent = e.address; $('rxPath').textContent = `m/44'/177'/0'/${e.path}`;
+  for (const r of document.querySelectorAll('.rxrow')) r.classList.toggle('sel', r.dataset.addr === e.address);
+  $('rxCopy').dataset.addr = e.address;
+}
+function renderReceive() {
+  rxList = wallet.entries.filter((e) => e.change === 0).slice(0, 8);
+  $('receiveList').innerHTML = rxList.map((e) => `<div class="rxrow" data-addr="${e.address}"><span class="p">${e.path}</span><span class="a">${e.address}</span><button class="copyone" data-addr="${e.address}" title="copy">⧉</button></div>`).join('');
+  for (const r of document.querySelectorAll('.rxrow')) r.onclick = (ev) => { if (ev.target.classList.contains('copyone')) return; showReceive(rxList.find((x) => x.address === r.dataset.addr)); };
+  for (const b of document.querySelectorAll('.copyone')) b.onclick = (ev) => { ev.stopPropagation(); copyText(b.dataset.addr, b); };
+  showReceive(rxList[0]);
+}
+
 async function loadEngine() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
   const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
@@ -202,7 +233,7 @@ function unlock() {
   if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('unlockStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
   return mnemonicToSeed(m, '').then((seed) => {
     wallet = deriveWallet(seed, se);
-    $('receiveList').innerHTML = wallet.entries.filter((e) => e.change === 0).slice(0, 6).map((e) => `<div class="field"><div class="dim" style="font-size:12px">${e.path}</div><div class="v">${e.address}</div></div>`).join('');
+    renderReceive();
     $('appwrap').style.display = ''; $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
     refresh();   // sync on open, like a classic wallet (uses your node if present, else Electrum)
   });
@@ -366,6 +397,7 @@ $('balNode').onclick = balNode;
 $('balElectrum').onclick = balElectrum;
 $('refresh').onclick = refresh;
 $('loadHist').onclick = loadHistory;
+$('rxCopy').onclick = () => copyText($('rxCopy').dataset.addr, $('rxCopy'));
 $('send').onclick = send;
 $('loadNode').onclick = loadNode;
 $('refreshNode').onclick = nodeStatus;
