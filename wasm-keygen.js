@@ -63,7 +63,7 @@ export function deriveSigningKey(seed, { purpose = 84, coin = 1, change = 0, ind
 
 // BIP39 English wordlist (bundled, 2048 words) — for generating a mnemonic.
 const WORDS = (await loadText(new URL('./data/bip39-english.txt', import.meta.url))).trim().split('\n');
-function entropyToMnemonic(entropy) {
+export function entropyToMnemonic(entropy) {
   const CS = (entropy.length * 8) / 32, cs = sha256(entropy), bits = [];
   for (const b of entropy) for (let i = 7; i >= 0; i--) bits.push((b >> i) & 1);
   for (let i = 0; i < CS; i++) bits.push((cs[i >> 3] >> (7 - (i & 7))) & 1);

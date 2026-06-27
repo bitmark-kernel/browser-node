@@ -70,7 +70,8 @@
 
 <div class="card" id="unlockCard">
   <h2>Unlock</h2>
-  <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
+  <input id="mnemonic" spellcheck="false" placeholder="mnemonic, or nostr / hex private key (64 hex) …">
+  <p class="dim" style="font-size:12px; margin:6px 0 0">12-word mnemonic, or a <a href="https://melvincarvalho.github.io/noskey/web/" target="_blank" rel="noopener">nostr</a> / hex private key — we use its first 128 bits.</p>
   <p style="margin:10px 0 0"><button class="primary" id="unlock">▶ Unlock wallet</button> <a href="keys.html" style="font-size:13px">make one →</a></p>
   <p style="margin:11px 0 0"><label style="display:inline-flex; align-items:center; gap:7px; text-transform:none; letter-spacing:0; font-size:13px; color:var(--fg); margin:0"><input type="checkbox" id="remember" style="width:auto" checked> Keep me unlocked on this device until I Lock</label></p>
   <div class="status dim" id="unlockStatus">engine loading…</div>
@@ -180,7 +181,7 @@
 import { Codec } from './engine/codec/codec.js';
 import { ScriptEngine, addressToScript } from './engine/codec/script.js';
 import { ScriptInterpreter } from './engine/codec/interpreter.js';
-import { mnemonicToSeed } from './wasm-keygen.js';
+import { mnemonicToSeed, entropyToMnemonic } from './wasm-keygen.js';
 import { deriveWallet, matchUtxos, planSpend } from './wallet-core.js';
 import { ElectrumClient } from './electrum-client.js';
 import { connect as liveConnect } from './live-feed.js';
@@ -258,12 +259,25 @@ async function hasFollowableSnapshot() {
 }
 
 async function unlock() {
-  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
-  if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('unlockStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  // Accept a BIP39 mnemonic, a nostr/hex private key (64 hex = 32 bytes), or raw
+  // 128-bit entropy (32 hex). For hex we take the first 128 bits as BIP39 entropy →
+  // a 12-word seed. Remember-me persists exactly what was entered: the 64-hex if a
+  // nostr key, the 32-hex if entropy, otherwise the mnemonic.
+  const raw = $('mnemonic').value.trim();
+  const hex = raw.toLowerCase();
+  let m, store;
+  if (/^[0-9a-f]{64}$/.test(hex) || /^[0-9a-f]{32}$/.test(hex)) {
+    const ent = new Uint8Array(16); for (let i = 0; i < 16; i++) ent[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    m = entropyToMnemonic(ent); store = hex;
+  } else {
+    m = hex.split(/\s+/).filter(Boolean).join(' ');
+    if (![12, 15, 18, 21, 24].includes(m ? m.split(' ').length : 0)) { $('unlockStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word mnemonic, or a nostr/hex key (64 or 32 hex)</span>'; return; }
+    store = m;
+  }
   const seed = await mnemonicToSeed(m, '');
   wallet = deriveWallet(seed, se);
   renderReceive();
-  if ($('remember').checked) localStorage.setItem(SEED_KEY, m); else localStorage.removeItem(SEED_KEY);
+  if ($('remember').checked) localStorage.setItem(SEED_KEY, store); else localStorage.removeItem(SEED_KEY);
   $('unlockCard').style.display = 'none'; $('appwrap').style.display = '';
   $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
   // sync on open: follow the tip in the background if enabled + a followable snapshot
