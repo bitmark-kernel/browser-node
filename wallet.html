@@ -68,25 +68,31 @@ import { ScriptEngine, addressToScript } from './engine/codec/script.js';
 import { ScriptInterpreter } from './engine/codec/interpreter.js';
 import { hash160, bytesToHex } from './engine/codec/hash.js';
 import { ElectrumClient } from './electrum-client.js';
+import { connect as liveConnect } from './live-feed.js';
+import { broadcastTx } from './broadcast.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
 const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
 const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
+const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';   // Bitmark P2P bridge room
 const COIN = 177, GAP = 20, DUST = 1000;
 const push = (hex) => (hex.length / 2).toString(16).padStart(2, '0') + hex;
 const fmtBTM = (s) => (s / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
 
 let codec = null, se = null, interp = null, seed = null, elec = null;
+let schemas = null, vectors = null;   // for P2P broadcast over the bridge
 let keymap = new Map();   // address → { key, spk, change, index }
 let utxos = [];           // [{ txid, vout, value, spk, address, key }]
 
 async function loadEngine() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
-  const [script, chain, core, proof, p2p] = await Promise.all(['script','chain','core','proof','p2p'].map(jl));
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
   se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
   codec = new Codec(core, proof, p2p);
   interp = new ScriptInterpreter(codec, se);
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await fetch('./data/bitmark.json').then(r => r.json());
 }
 
 function at(change, index) {
@@ -214,15 +220,20 @@ async function send() {
       + (change >= DUST ? `<tr><td class="dim">change → your 0/0</td><td>${fmtBTM(change)} BTM</td></tr>` : `<tr><td class="dim">change</td><td>none (added to fee)</td></tr>`)
       + `<tr><td class="dim">fee</td><td>${fmtBTM(fee)} BTM</td></tr></table></div>`
       + `<div class="field secret"><div class="k">raw transaction</div><div class="v">${rawHex}</div></div>`;
-    $('sendStatus').innerHTML = '<span class="dim">broadcasting via ElectrumX…</span>';
-
-    const e = await electrum();
-    const txid = await e.broadcast(rawHex);
-    if (txid !== localTxid) console.warn('server txid differs', txid, localTxid);
-    $('out').innerHTML += `<div class="field"><div class="k ok">✓ broadcast — accepted by the network</div><div class="v">txid ${txid}</div></div>`;
-    $('sendStatus').innerHTML = '<span class="ok">✓ sent</span>';
-    // refresh balance after a moment
-    setTimeout(scan, 1500);
+    // broadcast over the P2P bridge (mirror bitcoin-kernel: inv→getdata→tx, no trusted
+    // service), with ElectrumX as fallback if no peer admits it.
+    let txid = localTxid, via = null;
+    $('sendStatus').innerHTML = '<span class="dim">broadcasting over P2P (bridge → Bitmark peer)…</span>';
+    try {
+      const session = await liveConnect({ signalUrl, room: p2pRoom, network: 'btm:mainnet', schemas, vectors, log: (m) => { $('sendStatus').innerHTML = `<span class="dim">P2P: ${m}</span>`; } });
+      const r = await broadcastTx(session.peer, tx, codec);
+      try { session.peer.close(); } catch {}
+      if (r.accepted === true) via = `P2P (${r.detail})`;
+      else $('sendStatus').innerHTML = `<span class="dim">P2P: ${r.detail} — falling back to ElectrumX…</span>`;
+    } catch (e) { $('sendStatus').innerHTML = `<span class="dim">P2P unavailable (${e.message}) — falling back to ElectrumX…</span>`; }
+    if (!via) { const e = await electrum(); txid = await e.broadcast(rawHex); via = 'ElectrumX (fallback)'; }
+    $('out').innerHTML += `<div class="field"><div class="k ok">✓ broadcast via ${via}</div><div class="v">txid ${txid}</div></div>`;
+    $('sendStatus').innerHTML = `<span class="ok">✓ sent via ${via}</span> <span class="dim">— re-check balance to refresh</span>`;
   } catch (err) {
     $('sendStatus').innerHTML = `<span class="err">${err.message}</span>`;
   }
