@@ -451,7 +451,10 @@ async function startFollow() {
     } });
     if (!followState.running) { setMsg('stopped'); return; }
     $('followBar').style.width = '100%'; await persistLive(true); scanLive();
-    st.innerHTML = `<span class="ok">✓ at the tip (${(followRef.height - 1).toLocaleString()}) — following</span>`;
+    const h0 = followRef.height - 1, behind0 = followTipH ? Math.max(0, followTipH - h0) : 0;
+    st.innerHTML = behind0 > 0
+      ? `<span class="err">⚠ peer served only up to ${h0.toLocaleString()} but advertises ${behind0.toLocaleString()} more — it isn't relaying the newer blocks over the bridge. The node can't advance past the snapshot this way; use Electrum for live balance.</span>`
+      : `<span class="ok">✓ at the tip (${h0.toLocaleString()}) — following</span>`;
     await followTip(eng, followPeer, { utxo, times: followTimes, ref: followRef, state: followState,
       onBlocks: async ({ height: h, added }) => { scanLive(); st.innerHTML = `<span class="ok">✓ following tip (${h.toLocaleString()}) · +${added}</span>`; await persistLive(); },
       onError: (e) => { st.innerHTML = `<span class="dim">follow: ${e.message}</span>`; } });
