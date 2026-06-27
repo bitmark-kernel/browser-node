@@ -84,12 +84,20 @@ async function loadViaWebTorrent(magnet) {
   return new Promise((resolve, reject) => {
     const client = new WebTorrent();
     client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
-    const to = setTimeout(() => reject(new Error('WebTorrent timed out — is a seeder online?')), 120000);
+    // stall timeout: only fails if NO data flows for a while (not a hard cap) — a
+    // slow-but-progressing 189 MB download keeps going.
+    let stall;
+    const arm = (ms, msg) => { clearTimeout(stall); stall = setTimeout(() => { try { client.destroy(); } catch {} reject(new Error(msg)); }, ms); };
+    arm(70000, 'no data in 70s — no seeder reachable? (try seeding from a desktop, or use the bundled keystone)');
     client.add(magnet, (torrent) => {
-      log(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB) — downloading…`);
-      torrent.on('download', () => { $('status').innerHTML = `<span class="dim">keystone ${(100 * torrent.progress).toFixed(0)}% over WebTorrent (${torrent.numPeers} peers)…</span>`; });
+      log(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB)`, 'ok');
+      torrent.on('download', () => {
+        arm(70000, 'download stalled (no data for 70s)');
+        $('status').innerHTML = `<span class="dim">keystone ${(100 * torrent.progress).toFixed(1)}% · ${(torrent.downloaded / 1e6).toFixed(0)}/${(torrent.length / 1e6).toFixed(0)} MB · ${(torrent.downloadSpeed / 1e6).toFixed(2)} MB/s · ${torrent.numPeers} peer(s)</span>`;
+      });
+      torrent.on('wire', () => { $('prog').style.width = '2%'; });
       const file = torrent.files[0];
-      const done = (buf) => { clearTimeout(to); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
+      const done = (buf) => { clearTimeout(stall); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
       if (file.arrayBuffer) file.arrayBuffer().then((b) => done(new Uint8Array(b))).catch(reject);
       else file.getBuffer((err, b) => err ? reject(err) : done(b));
     });
