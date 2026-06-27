@@ -111,7 +111,10 @@
     <h2>Send</h2>
     <p class="dim" style="margin-top:0; font-size:13px">Available: <b id="sendAvail">—</b> <span id="sendAvailNote">· check Balance to load coins.</span></p>
     <label>to — Bitmark address (b…)</label>
-    <input id="dest" spellcheck="false" placeholder="b…">
+    <div style="display:flex; gap:7px">
+      <input id="dest" spellcheck="false" placeholder="b…">
+      <button id="scanBtn" type="button" style="flex:0 0 auto; padding:10px 14px">⛶ Scan</button>
+    </div>
     <div class="dim" id="destChk" style="font-size:12px; min-height:15px; margin-top:5px"></div>
     <div class="row">
       <div>
@@ -164,6 +167,12 @@
     <p style="margin-top:12px"><button class="primary" id="saveCfg">Save settings</button> <button id="testElec">Test Electrum</button> <button id="resetCfg">Reset</button></p>
     <div class="status dim" id="cfgStatus"></div>
   </div>
+</div>
+
+<div id="scanModal" style="display:none; position:fixed; inset:0; background:rgba(15,12,41,.93); z-index:50; flex-direction:column; align-items:center; justify-content:center; padding:20px">
+  <video id="scanVideo" playsinline muted style="width:100%; max-width:380px; border-radius:14px; background:#000; box-shadow:0 8px 30px rgba(0,0,0,.5)"></video>
+  <div id="scanMsg" style="color:#c3c5e8; font-size:13px; margin-top:14px; text-align:center; max-width:380px">point your camera at an address QR…</div>
+  <button id="scanCancel" style="margin-top:14px; background:#fff; color:#1a1d24">Cancel</button>
 </div>
 
 <script src="./qrcode.js"></script>
@@ -263,7 +272,7 @@ async function unlock() {
 
 // Lock: drop keys from memory, close Electrum, clear panels, show the unlock card.
 function lock() {
-  stopFollow(); liveUtxo = null; followRef = null;
+  stopFollow(); stopScan(); liveUtxo = null; followRef = null;
   localStorage.removeItem(SEED_KEY);   // log out: wipe the remembered seed
   wallet = null; utxos = []; lastSource = null; if (elec) { try { elec.close(); } catch {} elec = null; }
   $('mnemonic').value = '';
@@ -489,6 +498,56 @@ function validateSend() {
 function toggleUnit() { const sats = amountSats(); amtUnit = amtUnit === 'BTM' ? 'sats' : 'BTM'; $('amtUnit').textContent = amtUnit; if (!isNaN(sats)) $('amount').value = amtUnit === 'BTM' ? trimBTM(sats) : String(sats); validateSend(); }
 function setMax() { const fee = parseInt($('fee').value, 10) || 0; const maxSats = Math.max(0, sumUtxos() - fee); $('amount').value = amtUnit === 'BTM' ? trimBTM(maxSats) : String(maxSats); validateSend(); }
 
+// ---- Scan a recipient QR with the camera (jsQR, BarcodeDetector fast-path) ----
+let scanStream = null, scanRAF = null;
+function loadJsQR() { return new Promise((res, rej) => { if (window.jsQR) return res(); const s = document.createElement('script'); s.src = './jsqr.js'; s.onload = res; s.onerror = () => rej(new Error('failed to load the scanner')); document.head.appendChild(s); }); }
+async function startScan() {
+  const modal = $('scanModal'), video = $('scanVideo'), msg = $('scanMsg');
+  if (!navigator.mediaDevices?.getUserMedia) { alert('this browser has no camera access'); return; }
+  modal.style.display = 'flex'; msg.textContent = 'requesting camera…';
+  try {
+    const detector = ('BarcodeDetector' in window) ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+    if (!detector) await loadJsQR();
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = scanStream; await video.play();
+    msg.textContent = 'point your camera at an address QR…';
+    const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const tick = async () => {
+      if (!scanStream) return;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        let text = null;
+        if (detector) { try { const codes = await detector.detect(video); if (codes.length) text = codes[0].rawValue; } catch {} }
+        if (!text && window.jsQR) {
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const r = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+          if (r) text = r.data;
+        }
+        if (text) { onScan(text); return; }
+      }
+      scanRAF = requestAnimationFrame(tick);
+    };
+    scanRAF = requestAnimationFrame(tick);
+  } catch (e) { msg.textContent = 'camera error: ' + e.message; }
+}
+function stopScan() {
+  if (scanRAF) cancelAnimationFrame(scanRAF); scanRAF = null;
+  if (scanStream) { for (const t of scanStream.getTracks()) t.stop(); scanStream = null; }
+  $('scanModal').style.display = 'none'; $('scanVideo').srcObject = null;
+}
+// Accept a plain address or a `scheme:addr?amount=…` payment URI.
+function onScan(text) {
+  stopScan();
+  let addr = text.trim(), amount = null;
+  const m = addr.match(/^[a-z][a-z0-9.+-]*:([^?]+)(?:\?(.*))?$/i);
+  if (m) { addr = decodeURIComponent(m[1]); if (m[2]) { const a = new URLSearchParams(m[2]).get('amount'); if (a && isFinite(+a)) amount = a; } }
+  $('dest').value = addr;
+  if (amount) { amtUnit = 'BTM'; $('amtUnit').textContent = 'BTM'; $('amount').value = amount; }
+  tab('send'); validateSend();
+  if (!addressToScript(addr, se.params)) $('destChk').innerHTML = '<span class="err">✗ scanned code is not a valid Bitmark address</span>';
+}
+
 async function send() {
   $('sendOut').innerHTML = '';
   try {
@@ -522,6 +581,8 @@ $('rxCopy').onclick = () => copyText($('rxCopy').dataset.addr, $('rxCopy'));
 $('lock').onclick = lock;
 $('amtUnit').onclick = toggleUnit;
 $('maxBtn').onclick = setMax;
+$('scanBtn').onclick = startScan;
+$('scanCancel').onclick = stopScan;
 $('followBtn').onclick = toggleFollow;
 for (const id of ['dest','amount','fee']) $(id).oninput = validateSend;
 $('send').onclick = send;
