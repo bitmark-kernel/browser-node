@@ -168,6 +168,28 @@ function validateOne(eng, block, height, utxo, times) {
   times.push(block.header.time); if (times.length > 20) times.shift();
 }
 
+// Persist the validated UTXO set to OPFS (one NDJSON file: meta line + coin lines,
+// same format as a keystone) so wallet.html can read balance from our OWN node.
+// Additive + non-fatal: any failure just logs, the node keeps following. Writes in
+// ~1 MB chunks (awaits between them) so the UI stays responsive.
+async function persistUtxo(utxo, height) {
+  try {
+    if (!navigator.storage?.getDirectory) { log('OPFS unavailable — skipping UTXO persist', 'dim'); return; }
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle('btm-utxo.json', { create: true });
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify({ network: 'btm:mainnet', height, coins: utxo.size }) + '\n');
+    let buf = '';
+    for (const [k, c] of utxo) {
+      buf += JSON.stringify([k, `${c.output.value}\t${c.output.scriptPubKey}\t${c.height || 0}\t${c.coinbase ? 1 : 0}`]) + '\n';
+      if (buf.length > (1 << 20)) { await w.write(buf); buf = ''; }
+    }
+    if (buf) await w.write(buf);
+    await w.close();
+    log(`persisted ${utxo.size.toLocaleString()} coins to OPFS — wallet.html can now read balance from this node`, 'ok');
+  } catch (e) { log('UTXO persist failed (non-fatal): ' + e.message, 'warn'); }
+}
+
 let following = false;
 async function run(mode) {
   if (running) return; running = true; following = false; S.sigs = 0; S.sigFails = 0;
@@ -227,6 +249,7 @@ async function run(mode) {
     log(`caught up: height ${height - 1} · UTXO ${utxo.size} · ${S.sigs} signatures (${S.sigFails} known anomalies)`, 'ok');
     if (mode === 'keystone' && atTip) {
       $('prog').style.width = '100%';
+      await persistUtxo(utxo, height - 1);   // write the validated UTXO set to OPFS for wallet.html
       $('status').innerHTML = `<span class="ok">✓ at the tip (${(height - 1).toLocaleString()}) — following…</span>`;
       following = true; lastHash = locator; await followTip(eng, peer, utxo, times, () => height, (h) => { height = h; });
     } else {
@@ -253,6 +276,7 @@ async function followTip(eng, peer, utxo, times, getH, setH) {
         setH(h); lastHash = hs[hs.length - 1];
         $('height').textContent = (h - 1).toLocaleString(); $('utxo').textContent = utxo.size.toLocaleString(); $('sigs').textContent = S.sigs.toLocaleString();
         log(`+${hs.length} new block(s) → height ${h - 1}`, 'ok');
+        await persistUtxo(utxo, h - 1);   // keep the OPFS UTXO set current as we follow
         $('status').innerHTML = `<span class="ok">✓ following tip (${(h - 1).toLocaleString()})</span>`;
       }
     } catch (e) { log('follow: ' + e.message, 'warn'); }
