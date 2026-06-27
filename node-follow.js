@@ -125,13 +125,14 @@ export async function followTip(eng, peer, { utxo, times, ref, state, onBlocks, 
 }
 
 // Persist the UTXO set to OPFS as one NDJSON file (meta line + coin lines, the same
-// format parseKeystone reads) so the wallet can read balance from this node. Writes
-// in ~1 MB chunks. Browser-only (no-op without OPFS). Caller decides how often.
-export async function persistUtxo(utxo, height, network = 'btm:mainnet') {
+// format parseKeystone reads) so the wallet can read balance from this node. The
+// tip `hash` is stored in meta so a later session can follow forward from here.
+// Writes in ~1 MB chunks. Browser-only (no-op without OPFS). Caller decides how often.
+export async function persistUtxo(utxo, height, { network = 'btm:mainnet', hash = null } = {}) {
   if (!navigator?.storage?.getDirectory) return false;
   const root = await navigator.storage.getDirectory();
   const w = await (await root.getFileHandle('btm-utxo.json', { create: true })).createWritable();
-  await w.write(JSON.stringify({ network, height, coins: utxo.size }) + '\n');
+  await w.write(JSON.stringify({ network, height, coins: utxo.size, ...(hash ? { hash } : {}) }) + '\n');
   let buf = '';
   for (const [k, c] of utxo) {
     buf += JSON.stringify([k, `${c.output.value}\t${c.output.scriptPubKey}\t${c.height || 0}\t${c.coinbase ? 1 : 0}`]) + '\n';

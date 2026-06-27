@@ -46,6 +46,8 @@
   .rxrow .p { color:var(--mut); font-size:12px; font-family:var(--mono); flex:0 0 30px; }
   .rxrow .a { font-family:var(--mono); font-size:13px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .rxrow .copyone { padding:4px 10px; font-size:13px; flex:0 0 auto; }
+  .fbar { height:8px; border:1px solid var(--bd); border-radius:6px; overflow:hidden; background:var(--pan); margin:8px 0; }
+  .fbar > div { height:100%; background:var(--good); width:0; transition:width .25s; }
   table { border-collapse:collapse; width:100%; margin-top:10px; font-family:var(--mono); font-size:12.5px; }
   th,td { padding:7px 9px; text-align:left; border-bottom:1px solid var(--bd); } tr:last-child td { border-bottom:0; }
   th { color:var(--mut); font-size:11px; text-transform:uppercase; font-family:var(--sans); font-weight:700; } td.addr { word-break:break-all; }
@@ -138,7 +140,13 @@
     <input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:…">
     <p style="margin-top:10px"><button class="primary" id="loadNode">▶ Load node snapshot</button> <button id="refreshNode">Refresh</button></p>
     <div class="status dim" id="nodeLoadStatus"></div>
-    <p class="dim" style="font-size:12px">Loads the snapshot into this browser (OPFS) so Balance → <b>From my node</b> works with no trusted index. For full forward-validation + tip-following, run <a href="fullnode.html">fullnode.html</a>.</p>
+    <p class="dim" style="font-size:12px">Loads the snapshot into this browser (OPFS) so Balance → <b>From my node</b> works with no trusted index.</p>
+
+    <h3>Follow the tip <span class="pill">in this tab</span></h3>
+    <p class="dim" style="font-size:12px; margin:2px 0 8px">Validate every block forward from your snapshot and stay at the tip — balance then updates automatically as new blocks arrive, no Electrum. The first catch-up isn't instant.</p>
+    <div class="fbar"><div id="followBar"></div></div>
+    <p style="margin:8px 0 0"><button class="primary" id="followBtn">▶ Follow tip</button></p>
+    <div class="status dim" id="followStatus"></div>
 
     <h3>Connections <span class="pill">WebRTC bridges</span></h3>
     <label>WebRTC signaling server</label><input id="cfgSignal" spellcheck="false">
@@ -159,6 +167,7 @@ import { deriveWallet, matchUtxos, planSpend } from './wallet-core.js';
 import { ElectrumClient } from './electrum-client.js';
 import { connect as liveConnect } from './live-feed.js';
 import { broadcastTx } from './broadcast.js';
+import { buildEngines, parseKeystone, connectPeer, catchUp, followTip, persistUtxo, loadViaWebTorrent } from './node-follow.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -178,32 +187,13 @@ const DEFAULTS = {
 let cfg = { ...DEFAULTS, ...(() => { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } })() };
 for (const [p, k] of [['signal','signalUrl'],['electrumRoom','electrumRoom'],['p2pRoom','p2pRoom'],['magnet','magnet']]) { const v = q.get(p); if (v) cfg[k] = v; }
 
-// Fetch the keystone over WebTorrent — the magnet's infohash content-addresses the
-// data, so every piece is verified in transit. Same loader fullnode.html uses.
-async function loadViaWebTorrent(magnet, onProg) {
-  let WebTorrent;
-  try { ({ default: WebTorrent } = await import('https://cdn.jsdelivr.net/npm/webtorrent@2.8.5/dist/webtorrent.min.js')); }
-  catch (e1) { try { ({ default: WebTorrent } = await import('https://esm.sh/webtorrent@2.8.5')); } catch { throw new Error('WebTorrent failed to load: ' + e1.message); } }
-  return new Promise((resolve, reject) => {
-    const client = new WebTorrent();
-    client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
-    let stall; const arm = (ms, msg) => { clearTimeout(stall); stall = setTimeout(() => { try { client.destroy(); } catch {} reject(new Error(msg)); }, ms); };
-    arm(70000, 'no data in 70s — no seeder reachable? (seed the keystone from a desktop, or load it in fullnode.html first)');
-    client.add(magnet, (torrent) => {
-      onProg(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB)`);
-      torrent.on('download', () => { arm(70000, 'download stalled (no data for 70s)'); onProg(`${(100 * torrent.progress).toFixed(1)}% · ${(torrent.downloaded / 1e6).toFixed(0)}/${(torrent.length / 1e6).toFixed(0)} MB · ${(torrent.downloadSpeed / 1e6).toFixed(2)} MB/s · ${torrent.numPeers} peer(s)`); });
-      const file = torrent.files[0];
-      const done = (buf) => { clearTimeout(stall); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
-      if (file.arrayBuffer) file.arrayBuffer().then((b) => done(new Uint8Array(b))).catch(reject);
-      else file.getBuffer((err, b) => err ? reject(err) : done(b));
-    });
-  });
-}
-
 let codec, se, interp, schemas, vectors, elec = null;
 let wallet = null;     // { entries, byScript }
 let utxos = [];        // current spendable coins (with keys)
 let lastSource = null; // 'node' | 'electrum' — what Refresh repeats
+// Follow-tip state: a live UTXO Map this tab validates forward from the snapshot.
+let liveUtxo = null, followPeer = null, followRef = null, followTimes = [], lastFollowPersist = 0;
+const followState = { running: false };
 
 function setSync(state, text) { $('syncDot').className = 'dot' + (state ? ' ' + state : ''); $('syncTxt').textContent = text; }
 
@@ -231,7 +221,7 @@ async function loadEngine() {
   se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
   codec = new Codec(core, proof, p2p);
   interp = new ScriptInterpreter(codec, se);
-  schemas = { core, proof, p2p, chain, validate };
+  schemas = { core, proof, p2p, chain, validate, script };
   vectors = await fetch('./data/bitmark.json').then(r => r.json());
 }
 async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(cfg.signalUrl, { room: cfg.electrumRoom }); await elec.version(); return elec; }
@@ -250,6 +240,7 @@ function unlock() {
 
 // Lock: drop keys from memory, close Electrum, clear panels, show the unlock card.
 function lock() {
+  stopFollow(); liveUtxo = null; followRef = null;
   wallet = null; utxos = []; lastSource = null; if (elec) { try { elec.close(); } catch {} elec = null; }
   $('mnemonic').value = '';
   $('appwrap').style.display = 'none'; $('unlockCard').style.display = '';
@@ -291,7 +282,7 @@ async function loadNode() {
     if (body.length && body[body.length - 1] !== '\n') coins++;
     const root = await navigator.storage.getDirectory();
     const w = await (await root.getFileHandle('btm-utxo.json', { create: true })).createWritable();
-    await w.write(JSON.stringify({ network: 'btm:mainnet', height: meta.height, coins }) + '\n');
+    await w.write(JSON.stringify({ network: 'btm:mainnet', height: meta.height, coins, ...(meta.hash ? { hash: meta.hash } : {}) }) + '\n');
     for (let i = 0; i < body.length; i += (1 << 20)) await w.write(body.slice(i, i + (1 << 20)));
     await w.close();
     st.innerHTML = `<span class="ok">✓ snapshot saved — ${coins.toLocaleString()} coins @ height ${meta.height?.toLocaleString?.() ?? meta.height}. Balance → From my node now works.</span>`;
@@ -370,7 +361,72 @@ async function autoSource() {
   try { if (navigator.storage?.getDirectory) { const root = await navigator.storage.getDirectory(); await root.getFileHandle('btm-utxo.json'); return 'node'; } } catch {}
   return 'electrum';
 }
-async function refresh() { return (lastSource || await autoSource()) === 'node' ? balNode() : balElectrum(); }
+async function refresh() {
+  if (followState.running && liveUtxo) return scanLive();
+  return (lastSource || await autoSource()) === 'node' ? balNode() : balElectrum();
+}
+
+// ---- Follow the tip: validate blocks forward in this tab, keep balance live ----
+// Match the wallet against the live (followed) UTXO Map → balance, no OPFS/Electrum.
+function scanLive() {
+  if (!liveUtxo || !wallet) return;
+  const list = []; let bal = 0;
+  for (const [k, c] of liveUtxo) { const e = wallet.byScript.get(c.output.scriptPubKey); if (e) { const i = k.lastIndexOf(':'); list.push({ txid: k.slice(0, i), vout: Number(k.slice(i + 1)), value: c.output.value, spk: c.output.scriptPubKey, address: e.address, key: e.key }); bal += c.output.value; } }
+  const h = (followRef?.height || 1) - 1;
+  renderBalance(bal, list, `your node @ ${h.toLocaleString()} (following)`);
+  setSync('ok', `following · ${h.toLocaleString()}`);
+}
+async function persistLive(force = false) {
+  if (!force && Date.now() - lastFollowPersist < 180000) return;   // re-write OPFS at most every 3 min
+  try { if (await persistUtxo(liveUtxo, followRef.height - 1, { hash: followRef.locator })) lastFollowPersist = Date.now(); } catch {}
+}
+// Starting point for following: prefer the OPFS snapshot (must carry a tip hash),
+// else fetch the keystone over WebTorrent (which has one) and store it with the hash.
+async function followStart(eng, setMsg) {
+  if (navigator.storage?.getDirectory) {
+    try { const root = await navigator.storage.getDirectory(); const fh = await root.getFileHandle('btm-utxo.json'); const r = parseKeystone(await (await fh.getFile()).text()); if (r.meta.hash) { setMsg('using your saved snapshot…'); return r; } } catch {}
+  }
+  if (!cfg.magnet) throw new Error('no snapshot with a tip hash — load one via "Load node snapshot" first');
+  setMsg('fetching keystone over WebTorrent…');
+  const text = await loadViaWebTorrent(cfg.magnet, setMsg);
+  const r = parseKeystone(text);
+  if (!r.meta.hash) throw new Error('keystone has no tip hash');
+  return r;
+}
+async function startFollow() {
+  if (followState.running) return;
+  const btn = $('followBtn'), st = $('followStatus'); btn.disabled = true; followState.running = true;
+  const setMsg = (m) => { st.innerHTML = `<span class="dim">${m}</span>`; };
+  try {
+    setMsg('building engines…');
+    const eng = buildEngines(schemas);
+    const { utxo, meta } = await followStart(eng, setMsg);
+    liveUtxo = utxo; followRef = { height: meta.height + 1, locator: meta.hash }; followTimes = [];
+    setSync('sync', 'following'); scanLive();
+    setMsg('connecting to a Bitmark peer…');
+    followPeer = await connectPeer(eng, { signalUrl: cfg.signalUrl, room: cfg.p2pRoom });
+    const tipH = followPeer.peerVersion?.startHeight || 0;
+    btn.textContent = '■ Stop following'; btn.disabled = false;
+    await catchUp(eng, followPeer, { utxo, times: followTimes, ref: followRef, state: followState, onProgress: ({ height: h, coins }) => {
+      st.innerHTML = `<span class="dim">validating ${h.toLocaleString()}${tipH ? ` / ${tipH.toLocaleString()}` : ''} · ${coins.toLocaleString()} coins</span>`;
+      if (tipH) $('followBar').style.width = Math.min(100, 100 * h / tipH).toFixed(1) + '%';
+      scanLive();
+    } });
+    if (!followState.running) { setMsg('stopped'); return; }
+    $('followBar').style.width = '100%'; await persistLive(true); scanLive();
+    st.innerHTML = `<span class="ok">✓ at the tip (${(followRef.height - 1).toLocaleString()}) — following</span>`;
+    await followTip(eng, followPeer, { utxo, times: followTimes, ref: followRef, state: followState,
+      onBlocks: async ({ height: h, added }) => { scanLive(); st.innerHTML = `<span class="ok">✓ following tip (${h.toLocaleString()}) · +${added}</span>`; await persistLive(); },
+      onError: (e) => { st.innerHTML = `<span class="dim">follow: ${e.message}</span>`; } });
+  } catch (e) { st.innerHTML = `<span class="err">${e.message}</span>`; setSync('err', 'error'); }
+  finally { if (!followState.running) { try { followPeer?.close(); } catch {} followPeer = null; btn.textContent = '▶ Follow tip'; btn.disabled = false; } }
+}
+function stopFollow() {
+  followState.running = false; try { followPeer?.close(); } catch {} followPeer = null;
+  $('followBtn').textContent = '▶ Follow tip'; $('followBtn').disabled = false;
+  $('followStatus').innerHTML = '<span class="dim">stopped following</span>';
+}
+function toggleFollow() { followState.running ? stopFollow() : startFollow(); }
 
 async function loadHistory() {
   $('loadHist').disabled = true; const st = $('histStatus');
@@ -441,6 +497,7 @@ $('rxCopy').onclick = () => copyText($('rxCopy').dataset.addr, $('rxCopy'));
 $('lock').onclick = lock;
 $('amtUnit').onclick = toggleUnit;
 $('maxBtn').onclick = setMax;
+$('followBtn').onclick = toggleFollow;
 for (const id of ['dest','amount','fee']) $(id).oninput = validateSend;
 $('send').onclick = send;
 $('loadNode').onclick = loadNode;
