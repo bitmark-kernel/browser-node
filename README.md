@@ -37,9 +37,13 @@ UTXO set is tiny (chainstate ~97 MB).
 - **keys.html** — generate/import a BTM wallet (legacy P2PKH `b…`).
 - **wallet.html** — balance (ElectrumX) → coin-select → legacy sign → broadcast.
 - **explorer.html** — look up any address (balance/UTXOs/history) via ElectrumX.
+- **mempool.html** — watch the unconfirmed mempool for an address (P2P relay flow, in-tab, no API).
+- **spv.html** — verify a tx's inclusion in a block locally with a merkle proof (server supplies only the branch).
+- **mesh.html** — browser↔browser block propagation over WebRTC (N-peer full mesh, no server in the data path).
 - **node.html** — sync + validate the header chain from a peer (linkage + structure).
-- **fullnode.html** — download blocks and **fully validate** them in-tab (structure + context + every
-  signature) building a UTXO set, from genesis or from an **assumeUTXO keystone**.
+- **fullnode.html** — the capstone: load an **assumeUTXO keystone** over **WebTorrent**, validate blocks forward
+  over P2P, and **follow the tip** — a full node in a tab. (Or replay + fully validate from genesis.)
+- **how-it-works.html** — the architecture, end to end.
 
 ## The full node (the goal — Electrum is just bootstrap)
 
