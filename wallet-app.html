@@ -211,6 +211,7 @@ let codec, se, interp, schemas, vectors, elec = null;
 let wallet = null;     // { entries, byScript }
 let utxos = [];        // current spendable coins (with keys)
 let lastSource = null; // 'node' | 'electrum' — what Refresh repeats
+let histLoaded = false; // History auto-loads once per session, then stays put
 // Follow-tip state: a live UTXO Map this tab validates forward from the snapshot.
 let liveUtxo = null, followPeer = null, followRef = null, followTimes = [], lastFollowPersist = 0;
 const followState = { running: false };
@@ -274,7 +275,7 @@ async function unlock() {
 function lock() {
   stopFollow(); stopScan(); liveUtxo = null; followRef = null;
   localStorage.removeItem(SEED_KEY);   // log out: wipe the remembered seed
-  wallet = null; utxos = []; lastSource = null; if (elec) { try { elec.close(); } catch {} elec = null; }
+  wallet = null; utxos = []; lastSource = null; histLoaded = false; if (elec) { try { elec.close(); } catch {} elec = null; }
   $('mnemonic').value = '';
   $('appwrap').style.display = 'none'; $('unlockCard').style.display = '';
   $('hdrBal').textContent = '— BTM'; $('hdrSub').textContent = 'not synced'; setSync('', 'idle');
@@ -288,6 +289,7 @@ function tab(name) {
   for (const p of document.querySelectorAll('.tabpanel')) p.classList.toggle('active', p.id === 'tab-' + name);
   if (name === 'network') nodeStatus();
   if (name === 'send') { updateAvail(); validateSend(); }
+  if (name === 'history' && wallet && !histLoaded) loadHistory();   // load once, then remember
 }
 
 // ---- Network tab: node status, in-app bootstrap, editable endpoints ----
@@ -381,7 +383,7 @@ async function balElectrum() {
   try {
     $('balStatus').innerHTML = '<span class="dim">querying ElectrumX…</span>';
     const e = await electrum(); const coins = [];
-    for (const entry of wallet.entries) { const us = await e.listUnspent(entry.spk); for (const u of us) coins.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, spk: entry.spk }); }
+    for (const entry of wallet.entries) { try { const us = await e.listUnspent(entry.spk); for (const u of us) coins.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, spk: entry.spk }); } catch {} }
     const { utxos: list, balance } = matchUtxos(coins, wallet.byScript);
     renderBalance(balance, list, 'ElectrumX (trusted index)');
     $('balStatus').innerHTML = `<span class="ok">✓ via ElectrumX</span>`; setSync('ok', 'synced · electrum');
@@ -463,19 +465,22 @@ function stopFollow() {
 function toggleFollow() { followState.running ? stopFollow() : startFollow(); }
 
 async function loadHistory() {
+  if (!wallet) return;
   $('loadHist').disabled = true; const st = $('histStatus');
   try {
     st.innerHTML = '<span class="dim">querying Electrum…</span>';
-    const e = await electrum(); const txs = new Map();
+    const e = await electrum(); const txs = new Map(); let failed = 0;
     for (let i = 0; i < wallet.entries.length; i++) {
       const en = wallet.entries[i];
-      for (const r of await e.getHistory(en.spk)) { const t = txs.get(r.tx_hash) || { height: r.height, addrs: new Set() }; t.height = r.height; t.addrs.add(en.path); txs.set(r.tx_hash, t); }
+      try { for (const r of await e.getHistory(en.spk)) { const t = txs.get(r.tx_hash) || { height: r.height, addrs: new Set() }; t.height = r.height; t.addrs.add(en.path); txs.set(r.tx_hash, t); } }
+      catch { failed++; }   // one bad lookup shouldn't lose the whole scan
       st.innerHTML = `<span class="dim">scanned ${i + 1}/${wallet.entries.length} addresses…</span>`;
     }
     const rows = [...txs.entries()].sort((a, b) => (b[1].height > 0 ? b[1].height : Infinity) - (a[1].height > 0 ? a[1].height : Infinity))
       .map(([tx, t]) => `<tr><td class="addr">${tx.slice(0, 20)}…</td><td>${t.height > 0 ? t.height.toLocaleString() : '<span class="dim">mempool</span>'}</td><td>${[...t.addrs].join(', ')}</td></tr>`).join('');
     $('histOut').innerHTML = txs.size ? `<table><tr><th>txid</th><th>height</th><th>paths</th></tr>${rows}</table>` : '<p class="dim">no transactions for your addresses.</p>';
-    st.innerHTML = `<span class="ok">✓ ${txs.size} transaction(s)</span>`;
+    st.innerHTML = `<span class="ok">✓ ${txs.size} transaction(s)${failed ? ` · ${failed} lookup(s) failed` : ''}</span>`;
+    histLoaded = true;
   } catch (e) { st.innerHTML = `<span class="err">${e.message}</span>`; }
   finally { $('loadHist').disabled = false; }
 }
