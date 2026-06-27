@@ -32,6 +32,9 @@ Multi-algo PoW difficulty is delegated. <a href="index.html">home</a> · <a href
 <button id="start">▶ From genesis</button>
 <button id="startK">▶ From assumeUTXO keystone</button>
 <span id="status" class="dim">idle</span></p>
+<p class="dim" style="margin:0 0 4px">keystone source — a <b>WebTorrent magnet</b> (big snapshots, swarmed P2P) or blank for the small bundled one:</p>
+<input id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:… (optional)" style="width:100%; box-sizing:border-box">
+<script src="https://cdn.jsdelivr.net/npm/webtorrent@2/webtorrent.min.js"></script>
 
 <div class="stats">
   <div class="stat"><div class="n" id="height">0</div><div class="l">blocks validated</div></div>
@@ -66,6 +69,26 @@ let running = false;
 
 function log(m, c) { const d = $('log'); d.innerHTML += `<div class="${c||'dim'}">${m}</div>`; d.scrollTop = d.scrollHeight; }
 const median = (a) => { const s = [...a].sort((x,y)=>x-y); return s[s.length>>1]; };
+
+// Fetch the keystone snapshot over WebTorrent. The magnet's infohash content-
+// addresses the data, so WebTorrent verifies every piece against it — the snapshot
+// can't be tampered with in transit. Big snapshots live in the swarm, not gh-pages.
+function loadViaWebTorrent(magnet) {
+  return new Promise((resolve, reject) => {
+    if (typeof WebTorrent === 'undefined') return reject(new Error('WebTorrent failed to load'));
+    const client = new WebTorrent();
+    client.on('error', (e) => reject(new Error('webtorrent: ' + e.message)));
+    const to = setTimeout(() => reject(new Error('WebTorrent timed out — is a seeder online?')), 120000);
+    client.add(magnet, (torrent) => {
+      log(`swarm: ${torrent.name} (${(torrent.length / 1e6).toFixed(1)} MB) — downloading…`);
+      torrent.on('download', () => { $('status').innerHTML = `<span class="dim">keystone ${(100 * torrent.progress).toFixed(0)}% over WebTorrent (${torrent.numPeers} peers)…</span>`; });
+      const file = torrent.files[0];
+      const done = (buf) => { clearTimeout(to); resolve(new TextDecoder().decode(buf)); client.destroy(() => {}); };
+      if (file.arrayBuffer) file.arrayBuffer().then((b) => done(new Uint8Array(b))).catch(reject);
+      else file.getBuffer((err, b) => err ? reject(err) : done(b));
+    });
+  });
+}
 
 async function buildEngines() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
@@ -136,8 +159,9 @@ async function run(mode) {
     let utxo = new Map(), startHeight = 0, locator = vectors.genesisHash, includeLoc = true;
 
     if (mode === 'keystone') {
-      $('status').textContent = 'loading assumeUTXO keystone…';
-      const text = await fetch(keystoneUrl).then(r => { if (!r.ok) throw new Error('no keystone snapshot yet'); return r.text(); });
+      const magnet = ($('magnet').value.trim() || q.get('magnet') || '').trim();
+      $('status').textContent = magnet ? 'fetching keystone over WebTorrent…' : 'loading bundled keystone…';
+      const text = magnet ? await loadViaWebTorrent(magnet) : await fetch(keystoneUrl).then(r => { if (!r.ok) throw new Error('no bundled keystone yet — paste a magnet'); return r.text(); });
       const lines = text.split('\n').filter(Boolean); const meta = JSON.parse(lines[0]);
       for (let i = 1; i < lines.length; i++) { const [k, val] = JSON.parse(lines[i]); const [s, spk, ht, cb] = val.split('\t'); utxo.set(k, { output: { value: Number(s), scriptPubKey: spk }, height: Number(ht), coinbase: cb === '1' }); }
       startHeight = meta.height + 1; locator = meta.hash; includeLoc = false;
