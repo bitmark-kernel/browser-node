@@ -72,8 +72,9 @@
   <h2>Unlock</h2>
   <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
   <p style="margin:10px 0 0"><button class="primary" id="unlock">▶ Unlock wallet</button> <a href="keys.html" style="font-size:13px">make one →</a></p>
+  <p style="margin:11px 0 0"><label style="display:inline-flex; align-items:center; gap:7px; text-transform:none; letter-spacing:0; font-size:13px; color:var(--fg); margin:0"><input type="checkbox" id="remember" style="width:auto" checked> Keep me unlocked on this device until I Lock</label></p>
   <div class="status dim" id="unlockStatus">engine loading…</div>
-  <p class="dim" style="font-size:12px; margin:10px 0 0">Real coin · your mnemonic stays in this tab and is cleared on reload.</p>
+  <p class="dim" style="font-size:12px; margin:8px 0 0">Real coin. With this on, your seed is stored <b>unencrypted</b> in this browser until you Lock — only use on a device you trust.</p>
 </div>
 
 <div id="appwrap" style="display:none">
@@ -186,6 +187,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 // tab can override + save to localStorage. This is what makes the app standalone:
 // every backend it talks to is visible and changeable from one page.
 const LS_KEY = 'btm-wallet-cfg';
+const SEED_KEY = 'btm-wallet-seed';   // plaintext seed kept here until Lock (opt-in, this-device-only)
 const DEFAULTS = {
   signalUrl: 'wss://melvincarvalho.com/.webrtc',
   electrumRoom: 'e1ec47aabbccddee0011',
@@ -251,6 +253,7 @@ async function unlock() {
   const seed = await mnemonicToSeed(m, '');
   wallet = deriveWallet(seed, se);
   renderReceive();
+  if ($('remember').checked) localStorage.setItem(SEED_KEY, m); else localStorage.removeItem(SEED_KEY);
   $('unlockCard').style.display = 'none'; $('appwrap').style.display = '';
   $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
   // sync on open: follow the tip in the background if enabled + a followable snapshot
@@ -261,6 +264,7 @@ async function unlock() {
 // Lock: drop keys from memory, close Electrum, clear panels, show the unlock card.
 function lock() {
   stopFollow(); liveUtxo = null; followRef = null;
+  localStorage.removeItem(SEED_KEY);   // log out: wipe the remembered seed
   wallet = null; utxos = []; lastSource = null; if (elec) { try { elec.close(); } catch {} elec = null; }
   $('mnemonic').value = '';
   $('appwrap').style.display = 'none'; $('unlockCard').style.display = '';
@@ -529,6 +533,8 @@ $('resetCfg').onclick = resetCfg;
 fillCfg();
 await loadEngine();
 $('unlockStatus').textContent = 'engine ready — enter your mnemonic';
+const savedSeed = localStorage.getItem(SEED_KEY);   // stay unlocked across reloads until Lock
+if (savedSeed) { $('mnemonic').value = savedSeed; unlock(); }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 </script>
 </body>
