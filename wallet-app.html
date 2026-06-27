@@ -70,7 +70,7 @@
 <div id="appwrap" style="display:none">
   <div class="balbar">
     <div><div class="balbig" id="hdrBal">— BTM</div><div class="dim" id="hdrSub" style="font-size:12px">not synced</div></div>
-    <div style="text-align:right; white-space:nowrap"><div><span class="dot" id="syncDot"></span> <span id="syncTxt" class="dim" style="font-size:12px">idle</span></div><button id="refresh" style="margin-top:7px; padding:6px 12px; font-size:13px">↻ Refresh</button></div>
+    <div style="text-align:right; white-space:nowrap"><div><span class="dot" id="syncDot"></span> <span id="syncTxt" class="dim" style="font-size:12px">idle</span></div><button id="refresh" style="margin-top:7px; padding:6px 12px; font-size:13px">↻ Refresh</button> <button id="lock" style="margin-top:7px; padding:6px 12px; font-size:13px">🔒 Lock</button></div>
   </div>
   <div class="tabs">
     <button data-tab="receive">Receive</button>
@@ -232,9 +232,21 @@ function unlock() {
   return mnemonicToSeed(m, '').then((seed) => {
     wallet = deriveWallet(seed, se);
     renderReceive();
-    $('appwrap').style.display = ''; $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
+    $('unlockCard').style.display = 'none'; $('appwrap').style.display = '';
+    $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
     refresh();   // sync on open, like a classic wallet (uses your node if present, else Electrum)
   });
+}
+
+// Lock: drop keys from memory, close Electrum, clear panels, show the unlock card.
+function lock() {
+  wallet = null; utxos = []; lastSource = null; if (elec) { try { elec.close(); } catch {} elec = null; }
+  $('mnemonic').value = '';
+  $('appwrap').style.display = 'none'; $('unlockCard').style.display = '';
+  $('hdrBal').textContent = '— BTM'; $('hdrSub').textContent = 'not synced'; setSync('', 'idle');
+  for (const id of ['balOut','balStatus','sendOut','sendStatus','histOut','histStatus']) $(id).innerHTML = '';
+  $('unlockStatus').innerHTML = '<span class="dim">locked — enter your mnemonic</span>';
+  tab('balance');
 }
 
 function tab(name) {
@@ -396,6 +408,7 @@ $('balElectrum').onclick = balElectrum;
 $('refresh').onclick = refresh;
 $('loadHist').onclick = loadHistory;
 $('rxCopy').onclick = () => copyText($('rxCopy').dataset.addr, $('rxCopy'));
+$('lock').onclick = lock;
 $('send').onclick = send;
 $('loadNode').onclick = loadNode;
 $('refreshNode').onclick = nodeStatus;
