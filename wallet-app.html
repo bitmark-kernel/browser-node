@@ -28,7 +28,6 @@
   .tabs button { flex:1; }
   .tabs button.active { background:var(--ac); color:#fff; border-color:var(--ac); }
   .tabpanel { display:none; } .tabpanel.active { display:block; }
-  .warn { border:1px solid #e3a23a; background:#fff7ed; border-radius:11px; padding:10px 13px; margin:14px 0; color:var(--mut); font-size:13px; }
   .bal { font-size:30px; font-weight:700; color:var(--good); }
   .balbar { display:flex; justify-content:space-between; align-items:center; gap:12px; background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:13px 18px; margin:14px 0 0; box-shadow:0 1px 3px rgba(20,30,50,.05); }
   .balbig { font-size:25px; font-weight:700; color:var(--good); line-height:1.15; }
@@ -60,13 +59,12 @@
   <div class="sub">BTM · runs in your browser · keys never leave the tab · <a href="index.html">all tools</a></div>
 </header>
 
-<div class="warn">⚠ Real coin. Your mnemonic <b>is</b> your wallet — it stays in this tab and vanishes on reload. Signing is local.</div>
-
 <div class="card" id="unlockCard">
   <h2>Unlock</h2>
   <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
   <p style="margin:10px 0 0"><button class="primary" id="unlock">▶ Unlock wallet</button> <a href="keys.html" style="font-size:13px">make one →</a></p>
   <div class="status dim" id="unlockStatus">engine loading…</div>
+  <p class="dim" style="font-size:12px; margin:10px 0 0">Real coin · your mnemonic stays in this tab and is cleared on reload.</p>
 </div>
 
 <div id="appwrap" style="display:none">
