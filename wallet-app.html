@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bitmark Wallet — bitmark-kernel/browser-node</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#24243e">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bitmark">
 <style>
   :root { --bg:#eef0f6; --card:#fff; --fg:#1a1d24; --mut:#69727e; --bd:#e4e7ec; --pan:#f5f5fb; --ac:#4b3fb0; --ac2:#4b3fb0; --good:#1a7f37; --bad:#cf222e; --brand:linear-gradient(135deg,#0f0c29 0%,#302b63 55%,#24243e 100%); --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color-scheme:light; }
   * { box-sizing:border-box; }
@@ -522,6 +529,7 @@ $('resetCfg').onclick = resetCfg;
 fillCfg();
 await loadEngine();
 $('unlockStatus').textContent = 'engine ready — enter your mnemonic';
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 </script>
 </body>
 </html>
