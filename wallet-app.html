@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitmark Wallet — bitmark-kernel/browser-node</title>
+<style>
+  :root { --bg:#eef0f6; --card:#fff; --fg:#1a1d24; --mut:#69727e; --bd:#e4e7ec; --pan:#f5f5fb; --ac:#4b3fb0; --ac2:#4b3fb0; --good:#1a7f37; --bad:#cf222e; --brand:linear-gradient(135deg,#0f0c29 0%,#302b63 55%,#24243e 100%); --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color-scheme:light; }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { background:var(--bg); color:var(--fg); font:15px/1.55 var(--sans); max-width:640px; margin:0 auto; padding:22px 16px 64px; }
+  a { color:var(--ac2); text-decoration:none; } a:hover { text-decoration:underline; }
+  header { background:var(--brand); color:#fff; border-radius:16px; padding:20px 22px; box-shadow:0 8px 24px rgba(36,36,62,.28); }
+  header h1 { margin:0; font-size:21px; } header h1::before { content:"◆"; color:#9c95f0; margin-right:9px; }
+  header .sub { color:#c3c5e8; font-size:13px; margin-top:3px; } header a { color:#e9e7ff; text-decoration:underline; }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:14px 18px 18px; margin:14px 0; box-shadow:0 1px 3px rgba(20,30,50,.05); }
+  h2 { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.07em; margin:2px 0 12px; }
+  button { background:var(--card); color:var(--fg); border:1px solid var(--bd); border-radius:9px; padding:10px 16px; cursor:pointer; font:inherit; font-weight:600; transition:filter .12s,border-color .12s,background .12s; }
+  button:hover { border-color:var(--ac); } button:disabled { opacity:.45; cursor:default; }
+  .primary { background:var(--ac); color:#fff; border-color:var(--ac); } .primary:hover { filter:brightness(1.07); }
+  input { width:100%; box-sizing:border-box; border:1px solid var(--bd); border-radius:9px; padding:10px 12px; font:inherit; background:var(--card); color:var(--fg); }
+  input:focus { outline:none; border-color:var(--ac); box-shadow:0 0 0 3px rgba(75,63,176,.18); }
+  label { display:block; color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin:12px 0 5px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; } .row > div { flex:1; min-width:150px; }
+  .tabs { display:flex; gap:6px; margin:16px 0 0; }
+  .tabs button { flex:1; }
+  .tabs button.active { background:var(--ac); color:#fff; border-color:var(--ac); }
+  .tabpanel { display:none; } .tabpanel.active { display:block; }
+  .warn { border:1px solid #e3a23a; background:#fff7ed; border-radius:11px; padding:10px 13px; margin:14px 0; color:var(--mut); font-size:13px; }
+  .bal { font-size:30px; font-weight:700; color:var(--good); }
+  .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
+  code,.mono { font-family:var(--mono); }
+  .v { word-break:break-all; border:1px solid var(--bd); border-radius:9px; padding:9px 11px; background:var(--pan); margin-top:5px; user-select:all; font-family:var(--mono); font-size:13px; }
+  table { border-collapse:collapse; width:100%; margin-top:10px; font-family:var(--mono); font-size:12.5px; }
+  th,td { padding:7px 9px; text-align:left; border-bottom:1px solid var(--bd); } tr:last-child td { border-bottom:0; }
+  th { color:var(--mut); font-size:11px; text-transform:uppercase; font-family:var(--sans); font-weight:700; } td.addr { word-break:break-all; }
+  .status { font-size:13px; margin-top:8px; min-height:18px; }
+  @media (max-width:560px){ body{padding:16px 10px 48px} .card{padding:13px 13px 15px} .tabs{flex-wrap:wrap} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bitmark Wallet</h1>
+  <div class="sub">BTM · runs in your browser · keys never leave the tab · <a href="index.html">all tools</a></div>
+</header>
+
+<div class="warn">⚠ Real coin. Your mnemonic <b>is</b> your wallet — it stays in this tab and vanishes on reload. Signing is local.</div>
+
+<div class="card" id="unlockCard">
+  <h2>Unlock</h2>
+  <input id="mnemonic" spellcheck="false" placeholder="twelve word BIP39 mnemonic …">
+  <p style="margin:10px 0 0"><button class="primary" id="unlock">▶ Unlock wallet</button> <a href="keys.html" style="font-size:13px">make one →</a></p>
+  <div class="status dim" id="unlockStatus">engine loading…</div>
+</div>
+
+<div id="appwrap" style="display:none">
+  <div class="tabs">
+    <button data-tab="receive">Receive</button>
+    <button data-tab="balance" class="active">Balance</button>
+    <button data-tab="send">Send</button>
+  </div>
+
+  <div class="card tabpanel" id="tab-receive">
+    <h2>Receive — your addresses</h2>
+    <p class="dim" style="margin-top:0; font-size:13px">Fund any of these (legacy P2PKH). The first is your main receiving address.</p>
+    <div id="receiveList"></div>
+  </div>
+
+  <div class="card tabpanel active" id="tab-balance">
+    <h2>Balance</h2>
+    <p style="margin:0"><button class="primary" id="balNode">▶ From my node</button> <button id="balElectrum">Electrum</button></p>
+    <p class="dim" style="margin:8px 0 0; font-size:12px">"From my node" reads <a href="fullnode.html">your full node's</a> validated UTXO set (OPFS) — no trusted index.</p>
+    <div class="status dim" id="balStatus"></div>
+    <div id="balOut"></div>
+  </div>
+
+  <div class="card tabpanel" id="tab-send">
+    <h2>Send</h2>
+    <p class="dim" style="margin-top:0; font-size:13px">Check your balance first (it loads the coins to spend).</p>
+    <label>to (Bitmark address, b…)</label><input id="dest" spellcheck="false" placeholder="b…">
+    <div class="row">
+      <div><label>amount (sats · 1 BTM = 1e8)</label><input id="amount" inputmode="numeric" placeholder="1000000"></div>
+      <div style="flex:0 0 140px"><label>fee (sats)</label><input id="fee" inputmode="numeric" value="10000"></div>
+    </div>
+    <p style="margin-top:12px"><button class="primary" id="send">▶ Build, sign &amp; broadcast</button></p>
+    <div class="status dim" id="sendStatus"></div>
+    <div id="sendOut"></div>
+  </div>
+</div>
+
+<script type="module">
+import { Codec } from './engine/codec/codec.js';
+import { ScriptEngine, addressToScript } from './engine/codec/script.js';
+import { ScriptInterpreter } from './engine/codec/interpreter.js';
+import { mnemonicToSeed } from './wasm-keygen.js';
+import { deriveWallet, matchUtxos, planSpend } from './wallet-core.js';
+import { ElectrumClient } from './electrum-client.js';
+import { connect as liveConnect } from './live-feed.js';
+import { broadcastTx } from './broadcast.js';
+
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const signalUrl = q.get('signal') || 'wss://melvincarvalho.com/.webrtc';
+const electrumRoom = q.get('electrumRoom') || 'e1ec47aabbccddee0011';
+const p2pRoom = q.get('p2pRoom') || 'b17ec0de92650001';
+const fmtBTM = (s) => (s / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+let codec, se, interp, schemas, vectors, elec = null;
+let wallet = null;     // { entries, byScript }
+let utxos = [];        // current spendable coins (with keys)
+
+async function loadEngine() {
+  const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
+  const [script, chain, core, proof, p2p, validate] = await Promise.all(['script','chain','core','proof','p2p','validate'].map(jl));
+  se = ScriptEngine.fromSchemas(script, chain, 'btm:mainnet');
+  codec = new Codec(core, proof, p2p);
+  interp = new ScriptInterpreter(codec, se);
+  schemas = { core, proof, p2p, chain, validate };
+  vectors = await fetch('./data/bitmark.json').then(r => r.json());
+}
+async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(signalUrl, { room: electrumRoom }); await elec.version(); return elec; }
+
+function unlock() {
+  const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+  if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('unlockStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
+  return mnemonicToSeed(m, '').then((seed) => {
+    wallet = deriveWallet(seed, se);
+    $('receiveList').innerHTML = wallet.entries.filter((e) => e.change === 0).slice(0, 6).map((e) => `<div class="field"><div class="dim" style="font-size:12px">${e.path}</div><div class="v">${e.address}</div></div>`).join('');
+    $('appwrap').style.display = ''; $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
+  });
+}
+
+function tab(name) {
+  for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('active', b.dataset.tab === name);
+  for (const p of document.querySelectorAll('.tabpanel')) p.classList.toggle('active', p.id === 'tab-' + name);
+}
+
+function renderBalance(balance, list, source) {
+  utxos = list;
+  const rows = list.sort((a, b) => b.value - a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0,14)}…:${u.vout}</td></tr>`).join('');
+  $('balOut').innerHTML = `<div class="field" style="margin-top:10px"><div class="bal">${fmtBTM(balance)} BTM</div><div class="dim" style="font-size:13px">${list.length} UTXO(s) · ${source}</div></div>`
+    + (list.length ? `<table><tr><th>value (BTM)</th><th>address</th><th>outpoint</th></tr>${rows}</table>` : '<p class="dim">no coins for your addresses.</p>');
+}
+
+async function balNode() {
+  $('balNode').disabled = true;
+  try {
+    if (!navigator.storage?.getDirectory) throw new Error('OPFS not available in this browser');
+    const root = await navigator.storage.getDirectory();
+    let fh; try { fh = await root.getFileHandle('btm-utxo.json'); } catch { throw new Error('no node UTXO set yet — open fullnode.html, load the keystone, wait for "persisted …"'); }
+    $('balStatus').innerHTML = '<span class="dim">reading your node\'s UTXO set…</span>';
+    const text = await (await fh.getFile()).text();
+    const nl = text.indexOf('\n'); const meta = JSON.parse(text.slice(0, nl));
+    const list = []; let bal = 0, pos = nl + 1, scanned = 0; const total = meta.coins || 0;
+    while (pos < text.length) {
+      let end = text.indexOf('\n', pos); if (end < 0) end = text.length;
+      const line = text.slice(pos, end); pos = end + 1; if (!line) continue;
+      const [k, v] = JSON.parse(line); const [s, spk] = v.split('\t'); const e = wallet.byScript.get(spk);
+      if (e) { const c = k.split(':'); list.push({ txid: c[0], vout: Number(c[1]), value: Number(s), spk, address: e.address, key: e.key }); bal += Number(s); }
+      if (++scanned % 40000 === 0) { $('balStatus').innerHTML = `<span class="dim">scanning ${Math.round(100 * scanned / total)}%…</span>`; await tick(); }
+    }
+    renderBalance(bal, list, `your node @ height ${meta.height?.toLocaleString?.() ?? meta.height}, no Electrum`);
+    $('balStatus').innerHTML = `<span class="ok">✓ from your node</span>`;
+  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; }
+  finally { $('balNode').disabled = false; }
+}
+
+async function balElectrum() {
+  $('balElectrum').disabled = true;
+  try {
+    $('balStatus').innerHTML = '<span class="dim">querying ElectrumX…</span>';
+    const e = await electrum(); const coins = [];
+    for (const entry of wallet.entries) { const us = await e.listUnspent(entry.spk); for (const u of us) coins.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, spk: entry.spk }); }
+    const { utxos: list, balance } = matchUtxos(coins, wallet.byScript);
+    renderBalance(balance, list, 'ElectrumX (trusted index)');
+    $('balStatus').innerHTML = `<span class="ok">✓ via ElectrumX</span>`;
+  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; }
+  finally { $('balElectrum').disabled = false; }
+}
+
+async function send() {
+  $('sendOut').innerHTML = '';
+  try {
+    if (!utxos.length) throw new Error('check your balance first (loads the coins to spend)');
+    const destScript = addressToScript($('dest').value.trim(), se.params);
+    if (!destScript) throw new Error('destination is not a valid Bitmark address');
+    const amount = parseInt($('amount').value, 10), fee = parseInt($('fee').value, 10);
+    const plan = planSpend({ utxos, destScript, amount, fee, changeSpk: wallet.entries[0].spk, codec, interp });
+    $('sendOut').innerHTML = `<div class="field"><div class="dim" style="font-size:12px">signed (${plan.chosen.length} input(s), change ${fmtBTM(plan.change)} BTM)</div><div class="v">${plan.rawHex}</div></div>`;
+    $('sendStatus').innerHTML = '<span class="dim">broadcasting over P2P…</span>';
+    let via = null, txid = plan.txid;
+    try {
+      const s = await liveConnect({ signalUrl, room: p2pRoom, network: 'btm:mainnet', schemas, vectors, log: (m) => { $('sendStatus').innerHTML = `<span class="dim">P2P: ${m}</span>`; } });
+      const r = await broadcastTx(s.peer, plan.tx, codec); try { s.peer.close(); } catch {}
+      if (r.accepted === true) via = 'P2P';
+    } catch (e) { /* fall through */ }
+    if (!via) { $('sendStatus').innerHTML = '<span class="dim">P2P didn\'t confirm — via ElectrumX…</span>'; const e = await electrum(); txid = await e.broadcast(plan.rawHex); via = 'ElectrumX'; }
+    $('sendOut').innerHTML += `<div class="field"><div class="ok">✓ broadcast via ${via}</div><div class="v">txid ${txid}</div></div>`;
+    $('sendStatus').innerHTML = `<span class="ok">✓ sent via ${via}</span>`;
+  } catch (e) { $('sendStatus').innerHTML = `<span class="err">${e.message}</span>`; }
+}
+
+$('unlock').onclick = unlock;
+for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => tab(b.dataset.tab);
+$('balNode').onclick = balNode;
+$('balElectrum').onclick = balElectrum;
+$('send').onclick = send;
+await loadEngine();
+$('unlockStatus').textContent = 'engine ready — enter your mnemonic';
+</script>
+</body>
+</html>
