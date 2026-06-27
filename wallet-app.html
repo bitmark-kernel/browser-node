@@ -30,6 +30,11 @@
   .tabpanel { display:none; } .tabpanel.active { display:block; }
   .warn { border:1px solid #e3a23a; background:#fff7ed; border-radius:11px; padding:10px 13px; margin:14px 0; color:var(--mut); font-size:13px; }
   .bal { font-size:30px; font-weight:700; color:var(--good); }
+  .balbar { display:flex; justify-content:space-between; align-items:center; gap:12px; background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:13px 18px; margin:14px 0 0; box-shadow:0 1px 3px rgba(20,30,50,.05); }
+  .balbig { font-size:25px; font-weight:700; color:var(--good); line-height:1.15; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#b6bcc6; vertical-align:middle; }
+  .dot.sync { background:#e3a23a; animation:pulse 1s infinite; } .dot.ok { background:var(--good); } .dot.err { background:var(--bad); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
   .ok{color:var(--good)} .err{color:var(--bad)} .dim{color:var(--mut)}
   code,.mono { font-family:var(--mono); }
   .v { word-break:break-all; border:1px solid var(--bd); border-radius:9px; padding:9px 11px; background:var(--pan); margin-top:5px; user-select:all; font-family:var(--mono); font-size:13px; }
@@ -56,10 +61,15 @@
 </div>
 
 <div id="appwrap" style="display:none">
+  <div class="balbar">
+    <div><div class="balbig" id="hdrBal">— BTM</div><div class="dim" id="hdrSub" style="font-size:12px">not synced</div></div>
+    <div style="text-align:right; white-space:nowrap"><div><span class="dot" id="syncDot"></span> <span id="syncTxt" class="dim" style="font-size:12px">idle</span></div><button id="refresh" style="margin-top:7px; padding:6px 12px; font-size:13px">↻ Refresh</button></div>
+  </div>
   <div class="tabs">
     <button data-tab="receive">Receive</button>
     <button data-tab="balance" class="active">Balance</button>
     <button data-tab="send">Send</button>
+    <button data-tab="history">History</button>
     <button data-tab="network">Network</button>
   </div>
 
@@ -88,6 +98,14 @@
     <p style="margin-top:12px"><button class="primary" id="send">▶ Build, sign &amp; broadcast</button></p>
     <div class="status dim" id="sendStatus"></div>
     <div id="sendOut"></div>
+  </div>
+
+  <div class="card tabpanel" id="tab-history">
+    <h2>History</h2>
+    <p class="dim" style="margin-top:0; font-size:13px">Transactions touching your addresses (via Electrum). Newest first; unconfirmed shown as mempool.</p>
+    <p style="margin:0"><button class="primary" id="loadHist">↻ Load history</button></p>
+    <div class="status dim" id="histStatus"></div>
+    <div id="histOut"></div>
   </div>
 
   <div class="card tabpanel" id="tab-network">
@@ -164,6 +182,9 @@ async function loadViaWebTorrent(magnet, onProg) {
 let codec, se, interp, schemas, vectors, elec = null;
 let wallet = null;     // { entries, byScript }
 let utxos = [];        // current spendable coins (with keys)
+let lastSource = null; // 'node' | 'electrum' — what Refresh repeats
+
+function setSync(state, text) { $('syncDot').className = 'dot' + (state ? ' ' + state : ''); $('syncTxt').textContent = text; }
 
 async function loadEngine() {
   const jl = (n) => fetch(`./engine/schema/${n}.jsonld`).then(r => r.json());
@@ -183,6 +204,7 @@ function unlock() {
     wallet = deriveWallet(seed, se);
     $('receiveList').innerHTML = wallet.entries.filter((e) => e.change === 0).slice(0, 6).map((e) => `<div class="field"><div class="dim" style="font-size:12px">${e.path}</div><div class="v">${e.address}</div></div>`).join('');
     $('appwrap').style.display = ''; $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
+    refresh();   // sync on open, like a classic wallet (uses your node if present, else Electrum)
   });
 }
 
@@ -247,13 +269,15 @@ function resetCfg() { cfg = { ...DEFAULTS }; localStorage.removeItem(LS_KEY); fi
 
 function renderBalance(balance, list, source) {
   utxos = list;
+  $('hdrBal').textContent = fmtBTM(balance) + ' BTM';
+  $('hdrSub').textContent = `${list.length} UTXO(s) · ${source}`;
   const rows = list.sort((a, b) => b.value - a.value).map((u) => `<tr><td>${fmtBTM(u.value)}</td><td class="addr">${u.address}</td><td class="addr">${u.txid.slice(0,14)}…:${u.vout}</td></tr>`).join('');
   $('balOut').innerHTML = `<div class="field" style="margin-top:10px"><div class="bal">${fmtBTM(balance)} BTM</div><div class="dim" style="font-size:13px">${list.length} UTXO(s) · ${source}</div></div>`
     + (list.length ? `<table><tr><th>value (BTM)</th><th>address</th><th>outpoint</th></tr>${rows}</table>` : '<p class="dim">no coins for your addresses.</p>');
 }
 
 async function balNode() {
-  $('balNode').disabled = true;
+  $('balNode').disabled = true; lastSource = 'node'; setSync('sync', 'syncing · node');
   try {
     if (!navigator.storage?.getDirectory) throw new Error('OPFS not available in this browser');
     const root = await navigator.storage.getDirectory();
@@ -270,22 +294,48 @@ async function balNode() {
       if (++scanned % 40000 === 0) { $('balStatus').innerHTML = `<span class="dim">scanning ${Math.round(100 * scanned / total)}%…</span>`; await tick(); }
     }
     renderBalance(bal, list, `your node @ height ${meta.height?.toLocaleString?.() ?? meta.height}, no Electrum`);
-    $('balStatus').innerHTML = `<span class="ok">✓ from your node</span>`;
-  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; }
+    $('balStatus').innerHTML = `<span class="ok">✓ from your node</span>`; setSync('ok', 'synced · your node');
+  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; setSync('err', 'error'); }
   finally { $('balNode').disabled = false; }
 }
 
 async function balElectrum() {
-  $('balElectrum').disabled = true;
+  $('balElectrum').disabled = true; lastSource = 'electrum'; setSync('sync', 'syncing · electrum');
   try {
     $('balStatus').innerHTML = '<span class="dim">querying ElectrumX…</span>';
     const e = await electrum(); const coins = [];
     for (const entry of wallet.entries) { const us = await e.listUnspent(entry.spk); for (const u of us) coins.push({ txid: u.tx_hash, vout: u.tx_pos, value: u.value, spk: entry.spk }); }
     const { utxos: list, balance } = matchUtxos(coins, wallet.byScript);
     renderBalance(balance, list, 'ElectrumX (trusted index)');
-    $('balStatus').innerHTML = `<span class="ok">✓ via ElectrumX</span>`;
-  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; }
+    $('balStatus').innerHTML = `<span class="ok">✓ via ElectrumX</span>`; setSync('ok', 'synced · electrum');
+  } catch (e) { $('balStatus').innerHTML = `<span class="err">${e.message}</span>`; setSync('err', 'error'); }
   finally { $('balElectrum').disabled = false; }
+}
+
+// Refresh repeats the last source, else auto-picks: your node if a snapshot
+// exists, otherwise Electrum. Classic wallets sync on open — so does this.
+async function autoSource() {
+  try { if (navigator.storage?.getDirectory) { const root = await navigator.storage.getDirectory(); await root.getFileHandle('btm-utxo.json'); return 'node'; } } catch {}
+  return 'electrum';
+}
+async function refresh() { return (lastSource || await autoSource()) === 'node' ? balNode() : balElectrum(); }
+
+async function loadHistory() {
+  $('loadHist').disabled = true; const st = $('histStatus');
+  try {
+    st.innerHTML = '<span class="dim">querying Electrum…</span>';
+    const e = await electrum(); const txs = new Map();
+    for (let i = 0; i < wallet.entries.length; i++) {
+      const en = wallet.entries[i];
+      for (const r of await e.getHistory(en.spk)) { const t = txs.get(r.tx_hash) || { height: r.height, addrs: new Set() }; t.height = r.height; t.addrs.add(en.path); txs.set(r.tx_hash, t); }
+      st.innerHTML = `<span class="dim">scanned ${i + 1}/${wallet.entries.length} addresses…</span>`;
+    }
+    const rows = [...txs.entries()].sort((a, b) => (b[1].height > 0 ? b[1].height : Infinity) - (a[1].height > 0 ? a[1].height : Infinity))
+      .map(([tx, t]) => `<tr><td class="addr">${tx.slice(0, 20)}…</td><td>${t.height > 0 ? t.height.toLocaleString() : '<span class="dim">mempool</span>'}</td><td>${[...t.addrs].join(', ')}</td></tr>`).join('');
+    $('histOut').innerHTML = txs.size ? `<table><tr><th>txid</th><th>height</th><th>paths</th></tr>${rows}</table>` : '<p class="dim">no transactions for your addresses.</p>';
+    st.innerHTML = `<span class="ok">✓ ${txs.size} transaction(s)</span>`;
+  } catch (e) { st.innerHTML = `<span class="err">${e.message}</span>`; }
+  finally { $('loadHist').disabled = false; }
 }
 
 async function send() {
@@ -314,6 +364,8 @@ $('unlock').onclick = unlock;
 for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => tab(b.dataset.tab);
 $('balNode').onclick = balNode;
 $('balElectrum').onclick = balElectrum;
+$('refresh').onclick = refresh;
+$('loadHist').onclick = loadHistory;
 $('send').onclick = send;
 $('loadNode').onclick = loadNode;
 $('refreshNode').onclick = nodeStatus;
