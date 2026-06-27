@@ -172,7 +172,10 @@ function validateOne(eng, block, height, utxo, times) {
 // same format as a keystone) so wallet.html can read balance from our OWN node.
 // Additive + non-fatal: any failure just logs, the node keeps following. Writes in
 // ~1 MB chunks (awaits between them) so the UI stays responsive.
-async function persistUtxo(utxo, height) {
+let lastPersistMs = 0;
+const PERSIST_THROTTLE_MS = 180000;   // while following, re-write at most every 3 min
+async function persistUtxo(utxo, height, force = false) {
+  if (!force && Date.now() - lastPersistMs < PERSIST_THROTTLE_MS) return;   // skip; the set is still recent enough for the wallet
   try {
     if (!navigator.storage?.getDirectory) { log('OPFS unavailable — skipping UTXO persist', 'dim'); return; }
     const root = await navigator.storage.getDirectory();
@@ -186,6 +189,7 @@ async function persistUtxo(utxo, height) {
     }
     if (buf) await w.write(buf);
     await w.close();
+    lastPersistMs = Date.now();
     log(`persisted ${utxo.size.toLocaleString()} coins to OPFS — wallet.html can now read balance from this node`, 'ok');
   } catch (e) { log('UTXO persist failed (non-fatal): ' + e.message, 'warn'); }
 }
@@ -249,7 +253,7 @@ async function run(mode) {
     log(`caught up: height ${height - 1} · UTXO ${utxo.size} · ${S.sigs} signatures (${S.sigFails} known anomalies)`, 'ok');
     if (mode === 'keystone' && atTip) {
       $('prog').style.width = '100%';
-      await persistUtxo(utxo, height - 1);   // write the validated UTXO set to OPFS for wallet.html
+      await persistUtxo(utxo, height - 1, true);   // force the initial write of the validated UTXO set to OPFS
       $('status').innerHTML = `<span class="ok">✓ at the tip (${(height - 1).toLocaleString()}) — following…</span>`;
       following = true; lastHash = locator; await followTip(eng, peer, utxo, times, () => height, (h) => { height = h; });
     } else {
