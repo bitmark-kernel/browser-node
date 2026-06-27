@@ -146,6 +146,7 @@
     <p class="dim" style="font-size:12px; margin:2px 0 8px">Validate every block forward from your snapshot and stay at the tip — balance then updates automatically as new blocks arrive, no Electrum. The first catch-up isn't instant.</p>
     <div class="fbar"><div id="followBar"></div></div>
     <p style="margin:8px 0 0"><button class="primary" id="followBtn">▶ Follow tip</button></p>
+    <p style="margin:9px 0 0"><label style="display:inline-flex; align-items:center; gap:7px; text-transform:none; letter-spacing:0; font-size:13px; color:var(--fg); margin:0"><input type="checkbox" id="cfgAutoFollow" style="width:auto"> Follow the tip automatically when I unlock</label></p>
     <div class="status dim" id="followStatus"></div>
 
     <h3>Connections <span class="pill">WebRTC bridges</span></h3>
@@ -183,6 +184,7 @@ const DEFAULTS = {
   electrumRoom: 'e1ec47aabbccddee0011',
   p2pRoom: 'b17ec0de92650001',
   magnet: 'magnet:?xt=urn:btih:ed9c7f0b5af82880789cf861ffdbb4477021f987&dn=keystone-tip.json&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com',
+  autoFollow: true,
 };
 let cfg = { ...DEFAULTS, ...(() => { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } })() };
 for (const [p, k] of [['signal','signalUrl'],['electrumRoom','electrumRoom'],['p2pRoom','p2pRoom'],['magnet','magnet']]) { const v = q.get(p); if (v) cfg[k] = v; }
@@ -226,16 +228,27 @@ async function loadEngine() {
 }
 async function electrum() { if (elec && !elec.closed) return elec; elec = new ElectrumClient(); await elec.connect(cfg.signalUrl, { room: cfg.electrumRoom }); await elec.version(); return elec; }
 
-function unlock() {
+// Is there an OPFS snapshot we can follow forward from (i.e. it carries a tip hash)?
+async function hasFollowableSnapshot() {
+  try {
+    if (!navigator.storage?.getDirectory) return false;
+    const root = await navigator.storage.getDirectory(); const fh = await root.getFileHandle('btm-utxo.json');
+    const head = await (await fh.getFile()).slice(0, 4096).text(); const meta = JSON.parse(head.slice(0, head.indexOf('\n')));
+    return !!meta.hash;
+  } catch { return false; }
+}
+
+async function unlock() {
   const m = $('mnemonic').value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
   if (![12,15,18,21,24].includes(m ? m.split(' ').length : 0)) { $('unlockStatus').innerHTML = '<span class="err">expects a 12/15/18/21/24-word BIP39 mnemonic</span>'; return; }
-  return mnemonicToSeed(m, '').then((seed) => {
-    wallet = deriveWallet(seed, se);
-    renderReceive();
-    $('unlockCard').style.display = 'none'; $('appwrap').style.display = '';
-    $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
-    refresh();   // sync on open, like a classic wallet (uses your node if present, else Electrum)
-  });
+  const seed = await mnemonicToSeed(m, '');
+  wallet = deriveWallet(seed, se);
+  renderReceive();
+  $('unlockCard').style.display = 'none'; $('appwrap').style.display = '';
+  $('unlockStatus').innerHTML = '<span class="ok">✓ unlocked — keys in this tab only</span>';
+  // sync on open: follow the tip in the background if enabled + a followable snapshot
+  // exists; otherwise a one-shot balance read (your node static, else Electrum).
+  if (cfg.autoFollow && await hasFollowableSnapshot()) startFollow(); else refresh();
 }
 
 // Lock: drop keys from memory, close Electrum, clear panels, show the unlock card.
@@ -298,12 +311,13 @@ async function testElectrum() {
   finally { $('testElec').disabled = false; }
 }
 
-function fillCfg() { $('cfgSignal').value = cfg.signalUrl; $('cfgElectrumRoom').value = cfg.electrumRoom; $('cfgP2pRoom').value = cfg.p2pRoom; $('magnet').value = cfg.magnet; }
+function fillCfg() { $('cfgSignal').value = cfg.signalUrl; $('cfgElectrumRoom').value = cfg.electrumRoom; $('cfgP2pRoom').value = cfg.p2pRoom; $('magnet').value = cfg.magnet; $('cfgAutoFollow').checked = cfg.autoFollow !== false; }
 function saveCfg() {
   cfg.signalUrl = $('cfgSignal').value.trim() || DEFAULTS.signalUrl;
   cfg.electrumRoom = $('cfgElectrumRoom').value.trim() || DEFAULTS.electrumRoom;
   cfg.p2pRoom = $('cfgP2pRoom').value.trim() || DEFAULTS.p2pRoom;
   cfg.magnet = $('magnet').value.trim() || DEFAULTS.magnet;
+  cfg.autoFollow = $('cfgAutoFollow').checked;
   localStorage.setItem(LS_KEY, JSON.stringify(cfg));
   if (elec) { try { elec.close(); } catch {} elec = null; }   // reconnect with new endpoints next call
   $('cfgStatus').innerHTML = '<span class="ok">✓ saved to this browser</span>';
